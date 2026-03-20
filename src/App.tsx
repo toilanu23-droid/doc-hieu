@@ -33,6 +33,7 @@ import {
   ShieldCheck,
   Trash2,
   Eye,
+  EyeOff,
   Save,
   Users,
   Bot,
@@ -202,6 +203,7 @@ export default function App() {
   const [srForm, setSrForm] = useState({ text: '', answer: '', category: 'Tác giả' });
   
   const [showRankLeaderboard, setShowRankLeaderboard] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [allProfiles, setAllProfiles] = useState<UserProfile[]>([]);
   
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -301,11 +303,6 @@ export default function App() {
       setAssignments(snap.docs.map(d => ({ id: d.id, ...d.data() } as Assignment)));
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'assignments'));
 
-    const qSubmissions = query(collection(db, 'submissions'), orderBy('timestamp', 'desc'));
-    const unsubSubmissions = onSnapshot(qSubmissions, (snap) => {
-      setSubmissions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Submission)));
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'submissions'));
-
     const qProfiles = query(collection(db, 'profiles'), orderBy('points', 'desc'));
     const unsubProfiles = onSnapshot(qProfiles, (snap) => {
       setAllProfiles(snap.docs.map(d => ({ userId: d.id, ...d.data() } as UserProfile)));
@@ -316,19 +313,34 @@ export default function App() {
       setSpeedrunQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as SpeedrunQuestion)));
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'speedrunQuestions'));
 
+    return () => {
+      unsubAssignments();
+      unsubProfiles();
+      unsubSpeedrun();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setSubmissions([]);
+      return;
+    }
+
+    const qSubmissions = query(collection(db, 'submissions'), orderBy('timestamp', 'desc'));
+    const unsubSubmissions = onSnapshot(qSubmissions, (snap) => {
+      setSubmissions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Submission)));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'submissions'));
+
     const kbRef = doc(db, 'config', 'global_kb');
     const unsubKB = onSnapshot(kbRef, (snap) => {
       if (snap.exists()) setGlobalKnowledgeBase(snap.data().content);
-    });
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'config/global_kb'));
 
     return () => {
-      unsubAssignments();
       unsubSubmissions();
-      unsubProfiles();
-      unsubSpeedrun();
       unsubKB();
     };
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     let timer: any;
@@ -356,6 +368,7 @@ export default function App() {
     if (adminPassword === 'admin123') {
       setIsAdminLoggedIn(true);
       localStorage.setItem('admin_logged_in', 'true');
+      setAdminPassword('');
     } else {
       alert('Sai mật khẩu!');
     }
@@ -822,8 +835,8 @@ export default function App() {
             <div className="w-16 h-16 bg-brand-100 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-brand-600 group-hover:text-white transition-colors">
               <GraduationCap className="w-8 h-8 text-brand-600 group-hover:text-white" />
             </div>
-            <h2 className="text-3xl font-bold mb-2">Học sinh</h2>
-            <p className="text-brand-600/70">Luyện tập, thi đấu và nhận hỗ trợ từ AI 24/7.</p>
+            <h2 className="text-3xl font-bold mb-2 text-brand-950">Học sinh</h2>
+            <p className="text-brand-700">Luyện tập, thi đấu và nhận hỗ trợ từ AI 24/7.</p>
             <div className="mt-8 flex items-center gap-2 text-brand-600 font-bold">
               Bắt đầu ngay <ChevronRight className="w-5 h-5" />
             </div>
@@ -838,8 +851,8 @@ export default function App() {
             <div className="w-16 h-16 bg-brand-100 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-brand-600 group-hover:text-white transition-colors">
               <ShieldCheck className="w-8 h-8 text-brand-600 group-hover:text-white" />
             </div>
-            <h2 className="text-3xl font-bold mb-2">Giáo viên</h2>
-            <p className="text-brand-600/70">Quản lý bài tập, theo dõi tiến độ và dạy AI kiến thức.</p>
+            <h2 className="text-3xl font-bold mb-2 text-brand-950">Giáo viên</h2>
+            <p className="text-brand-700">Quản lý bài tập, theo dõi tiến độ và dạy AI kiến thức.</p>
             <div className="mt-8 flex items-center gap-2 text-brand-600 font-bold">
               Quản trị hệ thống <ChevronRight className="w-5 h-5" />
             </div>
@@ -864,24 +877,28 @@ export default function App() {
       >
         <div className="absolute top-0 left-0 w-full h-2 blue-gradient" />
         <div className="flex justify-center mb-8">
-          <motion.div 
-            whileHover={{ rotate: 15 }}
-            className="w-20 h-20 bg-brand-100 rounded-3xl flex items-center justify-center shadow-inner"
-          >
+          <div className="w-20 h-20 bg-brand-100 rounded-3xl flex items-center justify-center shadow-inner">
             <Lock className="w-10 h-10 text-brand-600" />
-          </motion.div>
+          </div>
         </div>
         <h2 className="text-3xl font-black text-center mb-2 text-brand-900 tracking-tight">Quyền Quản trị</h2>
         <p className="text-center text-brand-500 mb-10 text-sm font-medium">Vui lòng xác thực để truy cập hệ thống EduBlue ✨</p>
         <form onSubmit={handleAdminLogin} className="space-y-6">
           <div className="relative group">
             <input 
-              type="password" 
+              type={showPassword ? "text" : "password"} 
               value={adminPassword}
               onChange={(e) => setAdminPassword(e.target.value)}
-              className="w-full px-6 py-4 rounded-2xl border border-brand-100 bg-white/50 focus:bg-white focus:ring-8 focus:ring-brand-500/5 outline-none transition-all font-bold placeholder:text-brand-300"
+              className="w-full px-6 py-4 rounded-2xl border border-brand-100 bg-white/50 focus:bg-white focus:ring-8 focus:ring-brand-500/5 outline-none transition-all font-bold placeholder:text-brand-300 pr-14"
               placeholder="Nhập mật khẩu quản trị..."
             />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-brand-400 hover:text-brand-600 transition-colors"
+            >
+              {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+            </button>
           </div>
           <motion.button 
             whileHover={{ scale: 1.02 }}
@@ -1663,8 +1680,8 @@ export default function App() {
 
     return (
       <div className="min-h-screen bg-slate-50 text-slate-900">
-        <header className="bg-white border-b border-slate-200 px-8 py-4 sticky top-0 z-50 shadow-sm">
-          <div className="max-w-6xl mx-auto flex justify-between items-center">
+        <header className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
+          <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 px-4 md:px-8 py-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-brand-600 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/20">
                 <GraduationCap className="w-6 h-6 text-white" />
@@ -1684,17 +1701,17 @@ export default function App() {
                     {profile.rank[0]}
                   </div>
                   <div className="text-xs">
-                    <div className="font-black text-slate-900">{profile.points} pts</div>
+                    <div className="font-black text-brand-950">{profile.points} pts</div>
                     <div className="text-orange-600 font-bold flex items-center gap-1">
                       <Flame className="w-3 h-3 fill-current" /> {profile.streak}
                     </div>
                   </div>
                 </motion.div>
               )}
-              <div className="flex items-center gap-6">
+              <div className="flex items-center gap-4 md:gap-6">
                 <div className="text-right">
-                  <div className="font-black text-slate-900">{user?.displayName}</div>
-                  <div className="text-xs text-slate-500 font-bold">Lớp {studentClass || '...'}</div>
+                  <div className="font-black text-brand-950 text-sm md:text-base">{user?.displayName}</div>
+                  <div className="text-[10px] md:text-xs text-brand-600 font-bold">Lớp {studentClass || '...'}</div>
                 </div>
                 <button onClick={() => { signOut(auth).catch(err => console.error('Sign Out Error:', err)); setRole('home'); localStorage.removeItem('app_role'); }} className="text-slate-400 hover:text-red-500 transition-colors">
                   <LogOut className="w-5 h-5" />
@@ -1704,7 +1721,7 @@ export default function App() {
           </div>
         </header>
 
-        <main className="max-w-6xl mx-auto p-8">
+        <main className="max-w-6xl mx-auto p-4 md:p-8">
           {!isTakingQuiz && !quizResult ? (
             <div className="space-y-12">
               <div className="flex flex-wrap gap-4 justify-center md:justify-start">
@@ -1713,8 +1730,8 @@ export default function App() {
                 <a href="#leaderboard" className="px-6 py-3 bg-white rounded-2xl font-black text-brand-600 shadow-sm border border-brand-100 hover:bg-brand-50 transition-all">🏆 Bảng xếp hạng</a>
               </div>
 
-              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-6 items-end">
-                <div className="flex-1">
+              <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm flex flex-col gap-6">
+                <div className="w-full">
                   <label className="block text-xs font-black text-slate-400 uppercase mb-2 tracking-widest">Lớp của bạn</label>
                   <input 
                     type="text" 
@@ -1724,13 +1741,13 @@ export default function App() {
                     placeholder="VD: 12A1..."
                   />
                 </div>
-                <div className="flex gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full">
                   <div>
-                    <label className="block text-xs font-black text-slate-400 uppercase mb-2 tracking-widest">Thể loại</label>
+                    <label className="block text-xs font-black text-brand-900 uppercase mb-2 tracking-widest">Thể loại</label>
                     <select 
                       value={categoryFilter}
                       onChange={e => setCategoryFilter(e.target.value)}
-                      className="px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold"
+                      className="w-full px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold text-brand-950"
                     >
                       <option>Tất cả</option>
                       <option>Thơ</option>
@@ -1740,11 +1757,11 @@ export default function App() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-black text-slate-400 uppercase mb-2 tracking-widest">Độ khó</label>
+                    <label className="block text-xs font-black text-brand-900 uppercase mb-2 tracking-widest">Độ khó</label>
                     <select 
                       value={difficultyFilter}
                       onChange={e => setDifficultyFilter(e.target.value)}
-                      className="px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold"
+                      className="w-full px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold text-brand-950"
                     >
                       <option>Tất cả</option>
                       <option>Dễ</option>
@@ -1755,25 +1772,25 @@ export default function App() {
                 </div>
               </div>
 
-              <div id="mini-games" className="space-y-4">
-                <h2 className="text-2xl font-black text-brand-900 flex items-center gap-3">
-                  <Flame className="w-6 h-6 text-orange-500" /> Trò chơi & Thử thách
+              <div id="mini-games" className="space-y-6 p-6 md:p-8 bg-brand-50/50 rounded-[2.5rem] border-2 border-brand-200 shadow-inner">
+                <h2 className="text-2xl font-black text-brand-950 flex items-center gap-3">
+                  <Flame className="w-6 h-6 text-brand-600" /> Trò chơi & Thử thách
                 </h2>
-                <div className="grid md:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <motion.div 
                     whileHover={{ y: -5 }}
                     onClick={handleStartSpeedRun}
-                    className="bg-gradient-to-br from-indigo-600 to-violet-700 p-8 rounded-[2rem] shadow-xl shadow-indigo-500/20 cursor-pointer flex flex-col justify-between text-white relative overflow-hidden group"
+                    className="bg-gradient-to-br from-indigo-50 to-violet-100 p-8 rounded-[2rem] shadow-xl shadow-indigo-500/10 cursor-pointer flex flex-col justify-between border-2 border-indigo-200 relative overflow-hidden group"
                   >
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl group-hover:bg-white/20 transition-all" />
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full -mr-16 -mt-16 blur-2xl group-hover:bg-indigo-500/10 transition-all" />
                     <div className="relative z-10">
-                      <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center mb-6 backdrop-blur-sm">
+                      <div className="w-14 h-14 bg-indigo-600 rounded-2xl flex items-center justify-center mb-6 shadow-lg shadow-indigo-500/30">
                         <Clock className="w-8 h-8 text-white" />
                       </div>
-                      <h3 className="text-2xl font-black mb-2 tracking-tight">Speed Run Văn học</h3>
-                      <p className="text-indigo-100 text-sm opacity-80">Thử thách phản xạ nhanh với các câu hỏi kiến thức văn học.</p>
+                      <h3 className="text-2xl font-black mb-2 tracking-tight text-brand-950">Speed Run Văn học</h3>
+                      <p className="text-brand-900 text-sm font-medium">Thử thách phản xạ nhanh với các câu hỏi kiến thức văn học.</p>
                     </div>
-                    <div className="mt-8 flex items-center gap-2 font-black text-sm relative z-10">
+                    <div className="mt-8 flex items-center gap-2 font-black text-sm text-brand-950 relative z-10">
                       Chơi ngay <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                     </div>
                   </motion.div>
@@ -1781,17 +1798,17 @@ export default function App() {
                   <motion.div 
                     whileHover={{ y: -5 }}
                     onClick={() => setShowRankLeaderboard(true)}
-                    className="bg-gradient-to-br from-amber-500 to-orange-600 p-8 rounded-[2rem] shadow-xl shadow-orange-500/20 cursor-pointer flex flex-col justify-between text-white relative overflow-hidden group"
+                    className="bg-gradient-to-br from-amber-50 to-orange-100 p-8 rounded-[2rem] shadow-xl shadow-orange-500/10 cursor-pointer flex flex-col justify-between border-2 border-orange-200 relative overflow-hidden group"
                   >
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl group-hover:bg-white/20 transition-all" />
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 rounded-full -mr-16 -mt-16 blur-2xl group-hover:bg-orange-500/10 transition-all" />
                     <div className="relative z-10">
-                      <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center mb-6 backdrop-blur-sm">
+                      <div className="w-14 h-14 bg-orange-600 rounded-2xl flex items-center justify-center mb-6 shadow-lg shadow-orange-500/30">
                         <Trophy className="w-8 h-8 text-white" />
                       </div>
-                      <h3 className="text-2xl font-black mb-2 tracking-tight">Leo rank Văn học</h3>
-                      <p className="text-amber-100 text-sm opacity-80">Làm bài tích điểm để thăng hạng Đồng → Bạc → Vàng.</p>
+                      <h3 className="text-2xl font-black mb-2 tracking-tight text-brand-950">Leo rank Văn học</h3>
+                      <p className="text-brand-900 text-sm font-medium">Làm bài tích điểm để thăng hạng Đồng → Bạc → Vàng.</p>
                     </div>
-                    <div className="mt-8 flex items-center gap-2 font-black text-sm relative z-10">
+                    <div className="mt-8 flex items-center gap-2 font-black text-sm text-brand-950 relative z-10">
                       Xem bảng xếp hạng <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                     </div>
                   </motion.div>
@@ -1802,12 +1819,12 @@ export default function App() {
                 <h2 className="text-2xl font-black text-brand-900 flex items-center gap-3">
                   <FileText className="w-6 h-6 text-brand-600" /> Bài tập ôn luyện
                 </h2>
-                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {filteredAssignments.map(assignment => (
                     <motion.div 
                       key={assignment.id} 
                       whileHover={{ y: -5 }}
-                      className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col hover:shadow-xl hover:border-brand-200 transition-all group"
+                      className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col hover:shadow-xl hover:border-brand-200 transition-all group"
                     >
                       <div className="flex justify-between items-start mb-6">
                         <div className="flex gap-2">
@@ -1821,7 +1838,7 @@ export default function App() {
                           <Trophy className="w-5 h-5" />
                         </button>
                       </div>
-                      <h3 className="text-xl font-black mb-4 text-slate-900 group-hover:text-brand-600 transition-colors">{assignment.title}</h3>
+                      <h3 className="text-xl font-black mb-4 text-brand-950 group-hover:text-brand-600 transition-colors">{assignment.title}</h3>
                       <p className="text-slate-500 text-sm mb-8 line-clamp-2">{assignment.description || 'Không có mô tả cho bài tập này.'}</p>
                       <button 
                         onClick={() => handleStartQuiz(assignment)} 
@@ -2000,40 +2017,48 @@ export default function App() {
           ) : null}
         </main>
 
-        {/* Rank Leaderboard Modal */}
         <AnimatePresence>
           {showRankLeaderboard && (
-            <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-6">
-              <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl overflow-hidden">
-                <div className="p-8 bg-indigo-600 text-white flex justify-between items-center">
+            <div 
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6"
+              onClick={() => setShowRankLeaderboard(false)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }} 
+                animate={{ opacity: 1, scale: 1 }} 
+                exit={{ opacity: 0, scale: 0.9 }} 
+                className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="p-6 md:p-8 bg-brand-50 border-b border-brand-100 flex justify-between items-center">
                   <div className="flex items-center gap-4">
-                    <Trophy className="w-10 h-10" />
+                    <Trophy className="w-8 h-8 md:w-10 md:h-10 text-brand-600" />
                     <div>
-                      <h2 className="text-2xl font-bold">BXH Leo Rank</h2>
-                      <p className="text-indigo-100 text-sm">Những học sinh chăm chỉ nhất</p>
+                      <h2 className="text-xl md:text-2xl font-black text-brand-950">BXH Leo Rank</h2>
+                      <p className="text-brand-600 text-xs md:text-sm font-medium">Những học sinh chăm chỉ nhất</p>
                     </div>
                   </div>
-                  <button onClick={() => setShowRankLeaderboard(false)} className="p-2 hover:bg-white/10 rounded-full"><XCircle className="w-6 h-6" /></button>
+                  <button onClick={() => setShowRankLeaderboard(false)} className="p-2 hover:bg-brand-100 text-brand-400 rounded-full transition-colors"><XCircle className="w-6 h-6" /></button>
                 </div>
-                <div className="p-8 max-h-[60vh] overflow-y-auto">
+                <div className="p-6 md:p-8 max-h-[60vh] overflow-y-auto bg-white">
                   <div className="space-y-3">
                     {allProfiles.map((p, idx) => (
-                      <div key={p.userId} className={`flex items-center gap-4 p-4 rounded-2xl border ${p.userId === user?.uid ? 'bg-indigo-50 border-indigo-200' : 'bg-stone-50 border-stone-100'}`}>
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${idx === 0 ? 'bg-amber-100 text-amber-600' : idx === 1 ? 'bg-stone-200 text-stone-600' : idx === 2 ? 'bg-orange-100 text-orange-600' : 'bg-white text-stone-400'}`}>
+                      <div key={p.userId} className={`flex items-center gap-4 p-4 rounded-2xl border transition-all ${p.userId === user?.uid ? 'bg-brand-50 border-brand-200 shadow-sm' : 'bg-white border-brand-100 hover:border-brand-200'}`}>
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${idx === 0 ? 'bg-amber-100 text-amber-600' : idx === 1 ? 'bg-slate-100 text-slate-600' : idx === 2 ? 'bg-orange-100 text-orange-600' : 'bg-brand-50 text-brand-400'}`}>
                           {idx + 1}
                         </div>
                         <div className="flex-1">
-                          <div className="font-bold text-stone-900">{p.displayName}</div>
+                          <div className="font-black text-brand-950">{p.displayName}</div>
                           <div className="flex items-center gap-2">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold text-white ${
-                              p.rank === 'Vàng' ? 'bg-amber-500' : p.rank === 'Bạc' ? 'bg-stone-400' : 'bg-orange-600'
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-black text-white ${
+                              p.rank === 'Vàng' ? 'bg-amber-500' : p.rank === 'Bạc' ? 'bg-slate-400' : 'bg-orange-600'
                             }`}>{p.rank}</span>
-                            <span className="text-xs text-stone-400">{p.streak}🔥 streak</span>
+                            <span className="text-xs text-brand-500 font-medium">{p.streak}🔥 streak</span>
                           </div>
                         </div>
                         <div className="text-right">
-                          <div className="font-black text-stone-900">{p.points}</div>
-                          <div className="text-[10px] text-stone-400 font-bold uppercase">Điểm</div>
+                          <div className="font-black text-brand-950 text-lg">{p.points}</div>
+                          <div className="text-[10px] text-brand-400 font-black uppercase tracking-wider">Điểm</div>
                         </div>
                       </div>
                     ))}
@@ -2047,36 +2072,45 @@ export default function App() {
         {/* Leaderboard Modal */}
         <AnimatePresence>
           {leaderboardAssignmentId && (
-            <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-6">
-              <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl overflow-hidden">
-                <div className="p-8 bg-amber-500 text-white flex justify-between items-center">
+            <div 
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6"
+              onClick={() => setLeaderboardAssignmentId(null)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }} 
+                animate={{ opacity: 1, scale: 1 }} 
+                exit={{ opacity: 0, scale: 0.9 }} 
+                className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="p-6 md:p-8 bg-brand-50 border-b border-brand-100 flex justify-between items-center">
                   <div className="flex items-center gap-4">
-                    <Trophy className="w-10 h-10" />
+                    <Trophy className="w-8 h-8 md:w-10 md:h-10 text-brand-600" />
                     <div>
-                      <h2 className="text-2xl font-bold">Bảng Xếp Hạng</h2>
-                      <p className="text-amber-100 text-sm">Top 10 học sinh xuất sắc nhất</p>
+                      <h2 className="text-xl md:text-2xl font-black text-brand-950">Bảng Xếp Hạng</h2>
+                      <p className="text-brand-600 text-xs md:text-sm font-medium">Top 10 học sinh xuất sắc nhất</p>
                     </div>
                   </div>
-                  <button onClick={() => setLeaderboardAssignmentId(null)} className="p-2 hover:bg-white/10 rounded-full"><XCircle className="w-6 h-6" /></button>
+                  <button onClick={() => setLeaderboardAssignmentId(null)} className="p-2 hover:bg-brand-100 text-brand-400 rounded-full transition-colors"><XCircle className="w-6 h-6" /></button>
                 </div>
-                <div className="p-8">
+                <div className="p-6 md:p-8 bg-white">
                   <div className="space-y-3">
                     {getRankings(leaderboardAssignmentId).map((rank, idx) => (
-                      <div key={rank.id} className="flex items-center gap-4 p-4 bg-stone-50 rounded-2xl border border-stone-100">
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${idx === 0 ? 'bg-amber-100 text-amber-600' : idx === 1 ? 'bg-stone-200 text-stone-600' : idx === 2 ? 'bg-orange-100 text-orange-600' : 'bg-white text-stone-400'}`}>
+                      <div key={rank.id} className="flex items-center gap-4 p-4 bg-brand-50/50 rounded-2xl border border-brand-100 hover:border-brand-200 transition-all">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${idx === 0 ? 'bg-amber-100 text-amber-600' : idx === 1 ? 'bg-slate-100 text-slate-600' : idx === 2 ? 'bg-orange-100 text-orange-600' : 'bg-brand-50 text-brand-400'}`}>
                           {idx + 1}
                         </div>
                         <div className="flex-1">
-                          <div className="font-bold text-stone-900">{rank.studentName}</div>
-                          <div className="text-xs text-stone-400">Lớp {rank.studentClass}</div>
+                          <div className="font-black text-brand-950">{rank.studentName}</div>
+                          <div className="text-xs text-brand-500 font-medium">Lớp {rank.studentClass}</div>
                         </div>
                         <div className="text-right">
-                          <div className="font-black text-stone-900">{rank.score}%</div>
-                          <div className="text-[10px] text-stone-400 font-bold uppercase">{rank.completionTime}s</div>
+                          <div className="font-black text-brand-950 text-lg">{rank.score}%</div>
+                          <div className="text-[10px] text-brand-400 font-black uppercase tracking-wider">{rank.completionTime}s</div>
                         </div>
                       </div>
                     ))}
-                    {getRankings(leaderboardAssignmentId).length === 0 && <p className="text-center py-10 text-stone-400">Chưa có lượt nộp bài nào.</p>}
+                    {getRankings(leaderboardAssignmentId).length === 0 && <p className="text-center py-10 text-brand-400 font-medium">Chưa có lượt nộp bài nào.</p>}
                   </div>
                 </div>
               </motion.div>
@@ -2087,8 +2121,16 @@ export default function App() {
         {/* Speed Run Modal */}
         <AnimatePresence>
           {isSpeedRunActive && (
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-6">
-              <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white w-full max-w-xl rounded-[40px] shadow-2xl overflow-hidden">
+            <div 
+              className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4 md:p-6"
+              onClick={handleEndSpeedRun}
+            >
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0 }} 
+                animate={{ scale: 1, opacity: 1 }} 
+                className="bg-white w-full max-w-xl rounded-[2.5rem] shadow-2xl overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
                 <div className="p-8 bg-indigo-600 text-white flex justify-between items-center">
                   <div className="flex items-center gap-4">
                     <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center font-black text-xl">
@@ -2134,12 +2176,21 @@ export default function App() {
         </AnimatePresence>
         <AnimatePresence>
           {showAIChat && (
-            <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6">
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="bg-white w-full max-w-2xl h-[85vh] md:h-[600px] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden">
+            <div 
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6"
+              onClick={() => setShowAIChat(false)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }} 
+                animate={{ opacity: 1, y: 0 }} 
+                exit={{ opacity: 0, y: 20 }} 
+                className="bg-white w-full max-w-2xl h-[85vh] md:h-[600px] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
                 <div className="p-6 bg-emerald-600 text-white flex justify-between items-center">
                   <div className="flex items-center gap-3">
                     <BrainCircuit className="w-6 h-6" />
-                    <h2 className="font-bold">Trợ lý Học tập AI</h2>
+                    <h2 className="font-bold text-white">Trợ lý Học tập AI</h2>
                   </div>
                   <button onClick={() => setShowAIChat(false)} className="text-white/60 hover:text-white transition-colors"><XCircle className="w-6 h-6" /></button>
                 </div>
@@ -2173,12 +2224,21 @@ export default function App() {
 
         <AnimatePresence>
           {showSearchAgent && (
-            <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6">
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }} className="bg-white w-full max-w-3xl h-[85vh] md:h-[600px] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden">
-                <div className="p-6 bg-stone-900 text-white flex justify-between items-center">
+            <div 
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6"
+              onClick={() => setShowSearchAgent(false)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }} 
+                animate={{ opacity: 1, y: 0 }} 
+                exit={{ opacity: 0, y: 20 }} 
+                className="bg-white w-full max-w-3xl h-[85vh] md:h-[600px] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="p-6 bg-brand-600 text-white flex justify-between items-center">
                   <div className="flex items-center gap-3">
-                    <Globe className="w-6 h-6 text-emerald-400" />
-                    <h2 className="font-bold">Trợ lý Tin tức & Sự kiện</h2>
+                    <Globe className="w-6 h-6 text-white" />
+                    <h2 className="font-bold text-white">Trợ lý Tin tức & Sự kiện</h2>
                   </div>
                   <button onClick={() => setShowSearchAgent(false)} className="text-stone-400 hover:text-white transition-colors"><XCircle className="w-6 h-6" /></button>
                 </div>
@@ -2207,22 +2267,31 @@ export default function App() {
 
         <AnimatePresence>
           {selectedSubmission && (
-            <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6">
-              <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white w-full max-w-3xl max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden">
+            <div 
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6"
+              onClick={() => setSelectedSubmission(null)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }} 
+                animate={{ opacity: 1, scale: 1 }} 
+                exit={{ opacity: 0, scale: 0.95 }} 
+                className="bg-white w-full max-w-3xl max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
                 <div className="p-6 bg-brand-600 text-white flex justify-between items-center">
                   <div className="flex items-center gap-4">
                     <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center font-black text-xl">
                       {selectedSubmission.studentName[0]}
                     </div>
                     <div>
-                      <h2 className="text-xl font-bold">{selectedSubmission.studentName}</h2>
+                      <h2 className="text-xl font-bold text-white">{selectedSubmission.studentName}</h2>
                       <p className="text-brand-100 text-xs">Lớp {selectedSubmission.studentClass} • {selectedSubmission.assignmentTitle}</p>
                     </div>
                   </div>
                   <button onClick={() => setSelectedSubmission(null)} className="text-white/60 hover:text-white transition-colors"><XCircle className="w-6 h-6" /></button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-8 space-y-8">
-                  <div className="grid grid-cols-3 gap-6">
+                <div className="flex-1 overflow-y-auto p-6 md:p-8 space-y-8">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
                     <div className="bg-brand-50 p-6 rounded-3xl text-center">
                       <div className="text-3xl font-black text-brand-600">{selectedSubmission.score}%</div>
                       <div className="text-[10px] font-black text-brand-400 uppercase tracking-widest mt-1">Điểm số</div>
@@ -2247,7 +2316,7 @@ export default function App() {
                           </div>
                           <div className="flex-1">
                             <div className="font-bold text-brand-900 mb-2">Câu {idx + 1}</div>
-                            <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                               <div>
                                 <span className="text-brand-400 font-bold block mb-1 uppercase text-[10px]">Học sinh chọn</span>
                                 <span className={`font-bold ${ans.isCorrect ? 'text-emerald-600' : 'text-red-600'}`}>{ans.studentAnswer || '(Trống)'}</span>
@@ -2274,7 +2343,7 @@ export default function App() {
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
             onClick={() => setShowSearchAgent(true)} 
-            className="w-14 h-14 md:w-16 md:h-16 bg-slate-900 text-white rounded-2xl md:rounded-3xl shadow-2xl shadow-slate-900/20 flex items-center justify-center transition-all border border-white/10"
+            className="w-14 h-14 md:w-16 md:h-16 bg-brand-600 text-white rounded-2xl md:rounded-3xl shadow-2xl shadow-brand-600/20 flex items-center justify-center transition-all border border-white/10"
           >
             <Globe className="w-6 h-6 md:w-7 md:h-7" />
           </motion.button>

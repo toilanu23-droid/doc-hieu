@@ -85,6 +85,15 @@
     "speedrunQuestions": {
       "schema": "SpeedrunQuestion",
       "description": "Collection of speedrun questions"
+    },
+    "config": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "content": { "type": "string" }
+        }
+      },
+      "description": "Global configuration settings"
     }
   }
 }
