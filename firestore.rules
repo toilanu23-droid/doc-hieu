@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+             request.auth.token.email == "toilanu23@gmail.com" && 
+             request.auth.token.email_verified == true;
+    }
+
+    function isValidAssignment(data) {
+      return data.title is string && data.title.size() > 0 &&
+             data.category is string && 
+             data.difficulty in ["Dễ", "Trung bình", "Khó"] &&
+             data.content is string &&
+             data.questions is list;
+    }
+
+    function isValidSubmission(data) {
+      return data.studentName is string && 
+             data.assignmentId is string &&
+             data.score is number &&
+             data.completionTime is number &&
+             data.answers is list;
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
+    match /profiles/{userId} {
+      allow read: if true;
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    match /speedrunQuestions/{questionId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /config/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}

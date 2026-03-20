@@ -1,0 +1,90 @@
+{
+  "entities": {
+    "Assignment": {
+      "title": "Assignment",
+      "description": "A reading comprehension assignment created by the teacher.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Title of the assignment" },
+        "category": { "type": "string", "description": "Category (e.g., Reading, Literature)" },
+        "difficulty": { "type": "string", "enum": ["Dễ", "Trung bình", "Khó"] },
+        "content": { "type": "string", "description": "The reading text content" },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": { "type": "string" },
+              "type": { "type": "string", "enum": ["multiple-choice", "short-answer"] },
+              "options": { "type": "array", "items": { "type": "string" } },
+              "answer": { "type": "string" }
+            }
+          }
+        },
+        "knowledgeBase": { "type": "string", "description": "Additional knowledge for AI to use" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "category", "difficulty", "content", "questions"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "A student's completed assignment attempt.",
+      "type": "object",
+      "properties": {
+        "studentName": { "type": "string" },
+        "studentEmail": { "type": "string" },
+        "studentClass": { "type": "string" },
+        "assignmentId": { "type": "string" },
+        "score": { "type": "number" },
+        "completionTime": { "type": "number", "description": "Time taken in seconds" },
+        "answers": { "type": "array", "items": { "type": "object" } },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "attemptCount": { "type": "number" }
+      },
+      "required": ["studentName", "assignmentId", "score", "answers", "timestamp", "completionTime"]
+    },
+    "Profile": {
+      "title": "Profile",
+      "description": "User profile tracking points, rank, and streaks.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "points": { "type": "number" },
+        "rank": { "type": "string", "enum": ["Đồng", "Bạc", "Vàng"] },
+        "streak": { "type": "number" },
+        "lastActive": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "points", "rank", "streak"]
+    },
+    "SpeedrunQuestion": {
+      "title": "SpeedrunQuestion",
+      "description": "Short questions for the Speed Run game.",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "answer": { "type": "string" },
+        "category": { "type": "string", "enum": ["Tác giả", "Năm sáng tác", "Phong cách"] }
+      },
+      "required": ["text", "answer", "category"]
+    }
+  },
+  "firestore": {
+    "assignments": {
+      "schema": "Assignment",
+      "description": "Collection of reading assignments"
+    },
+    "submissions": {
+      "schema": "Submission",
+      "description": "Collection of student submissions"
+    },
+    "profiles": {
+      "schema": "Profile",
+      "description": "Collection of user profiles"
+    },
+    "speedrunQuestions": {
+      "schema": "SpeedrunQuestion",
+      "description": "Collection of speedrun questions"
+    }
+  }
+}
