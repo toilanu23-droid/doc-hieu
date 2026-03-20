@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const API_KEY = process.env.GEMINI_API_KEY || '';
+const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null;
 
 export async function getAIHelp(
   question: string,
@@ -10,6 +11,9 @@ export async function getAIHelp(
   knowledgeBase: string,
   chatHistory: { role: string, text: string }[]
 ) {
+  if (!ai) {
+    return "Lỗi: API Key chưa được cấu hình. Vui lòng kiểm tra cài đặt môi trường.";
+  }
   const model = "gemini-3-flash-preview";
   
   const systemInstruction = `
@@ -57,6 +61,9 @@ export async function getAIHelp(
 }
 
 export async function searchAgent(query: string, chatHistory: { role: string, text: string }[]) {
+  if (!ai) {
+    return "Lỗi: API Key chưa được cấu hình. Vui lòng kiểm tra cài đặt môi trường.";
+  }
   const model = "gemini-3-flash-preview";
   
   const systemInstruction = `
