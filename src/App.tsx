@@ -244,6 +244,13 @@ export default function App() {
   const [leaderboardAssignmentId, setLeaderboardAssignmentId] = useState<string | null>(null);
   const [adminClassFilter, setAdminClassFilter] = useState('Tất cả');
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   const [newAssignment, setNewAssignment] = useState<Partial<Assignment>>({
     title: '',
     description: '',
@@ -357,9 +364,20 @@ export default function App() {
       await signInWithPopup(auth, googleProvider);
       setRole(targetRole);
       localStorage.setItem('app_role', targetRole);
-    } catch (error) {
-      console.error(error);
-      alert('Lỗi đăng nhập Google');
+      showToast('Đăng nhập thành công!', 'success');
+    } catch (error: any) {
+      console.error('Google Login Error:', error);
+      let msg = 'Lỗi đăng nhập Google';
+      if (error.code === 'auth/popup-blocked') {
+        msg = 'Trình duyệt đã chặn cửa sổ đăng nhập. Vui lòng cho phép popup.';
+      } else if (error.code === 'auth/unauthorized-domain') {
+        msg = 'Tên miền này chưa được cấp phép đăng nhập Google. Vui lòng liên hệ quản trị viên.';
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        msg = 'Yêu cầu đăng nhập đã bị hủy.';
+      } else if (error.code === 'auth/operation-not-allowed') {
+        msg = 'Phương thức đăng nhập Google chưa được kích hoạt trong Firebase.';
+      }
+      showToast(msg, 'error');
     }
   };
 
@@ -369,8 +387,9 @@ export default function App() {
       setIsAdminLoggedIn(true);
       localStorage.setItem('admin_logged_in', 'true');
       setAdminPassword('');
+      showToast('Đăng nhập thành công!', 'success');
     } else {
-      alert('Sai mật khẩu!');
+      showToast('Sai mật khẩu!', 'error');
     }
   };
 
@@ -384,7 +403,7 @@ export default function App() {
 
   const handleAddAssignment = async () => {
     if (!newAssignment.title || !newAssignment.content || newAssignment.questions?.length === 0) {
-      alert('Vui lòng điền đầy đủ thông tin bài tập!');
+      showToast('Vui lòng điền đầy đủ thông tin bài tập!', 'error');
       return;
     }
     try {
@@ -393,16 +412,16 @@ export default function App() {
         createdAt: serverTimestamp()
       });
       setNewAssignment({ title: '', description: '', content: '', questions: [], knowledgeBase: '' });
-      alert('Đã thêm bài tập!');
+      showToast('Đã thêm bài tập!', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'assignments');
     }
   };
 
   const handleDeleteAssignment = async (id: string) => {
-    if (!confirm('Bạn có chắc muốn xoá bài tập này?')) return;
     try {
       await deleteDoc(doc(db, 'assignments', id));
+      showToast('Đã xoá bài tập!', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `assignments/${id}`);
     }
@@ -411,7 +430,7 @@ export default function App() {
   const handleSaveGlobalKB = async () => {
     try {
       await setDoc(doc(db, 'config', 'global_kb'), { content: globalKnowledgeBase });
-      alert('Đã lưu hướng dẫn AI!');
+      showToast('Đã lưu hướng dẫn AI!', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, 'config/global_kb');
     }
@@ -419,11 +438,11 @@ export default function App() {
 
   const handleStartQuiz = (assignment: Assignment) => {
     if (!user) {
-      alert('Vui lòng đăng nhập!');
+      showToast('Vui lòng đăng nhập!', 'error');
       return;
     }
     if (!studentClass) {
-      alert('Vui lòng nhập lớp!');
+      showToast('Vui lòng nhập lớp!', 'error');
       return;
     }
     setActiveAssignment(assignment);
@@ -505,7 +524,7 @@ export default function App() {
       else if (newPoints >= 500) newRank = 'Bạc';
 
       if (newRank !== profile?.rank && profile) {
-        alert(`Chúc mừng! Bạn đã thăng hạng lên ${newRank}! 🏆`);
+        showToast(`Chúc mừng! Bạn đã thăng hạng lên ${newRank}! 🏆`, 'success');
       }
 
       try {
@@ -526,7 +545,7 @@ export default function App() {
 
   const handleStartSpeedRun = () => {
     if (speedrunQuestions.length === 0) {
-      alert('Chưa có câu hỏi Speed Run nào!');
+      showToast('Chưa có câu hỏi Speed Run nào!', 'error');
       return;
     }
     setIsSpeedRunActive(true);
@@ -559,7 +578,7 @@ export default function App() {
       try {
         await updateDoc(profileRef, { points: increment(pointsEarned) });
         await updateStreak();
-        alert(`Hết giờ! Bạn đạt ${speedRunScore} câu đúng, nhận được ${pointsEarned} điểm!`);
+        showToast(`Hết giờ! Bạn đạt ${speedRunScore} câu đúng, nhận được ${pointsEarned} điểm!`, 'info');
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `profiles/${user.uid}`);
       }
@@ -609,7 +628,7 @@ export default function App() {
               }
             }
           }
-          alert('Đã tải lên câu hỏi Speed Run!');
+          showToast('Đã tải lên câu hỏi Speed Run!', 'success');
         }
       };
       reader.readAsText(file);
@@ -626,11 +645,11 @@ export default function App() {
           } else if (type === 'assignment_kb') {
             setNewAssignment(prev => ({ ...prev, knowledgeBase: text }));
           } else {
-            alert('File .docx chỉ hỗ trợ tải nội dung văn bản!');
+            showToast('File .docx chỉ hỗ trợ tải nội dung văn bản!', 'error');
           }
         } catch (err) {
           console.error('Error parsing docx:', err);
-          alert('Lỗi khi đọc file .docx');
+          showToast('Lỗi khi đọc file .docx', 'error');
         }
       };
       reader.readAsArrayBuffer(file);
@@ -653,16 +672,16 @@ export default function App() {
           } else if (type === 'assignment_kb') {
             setNewAssignment(prev => ({ ...prev, knowledgeBase: fullText }));
           } else {
-            alert('File .pdf chỉ hỗ trợ tải nội dung văn bản!');
+            showToast('File .pdf chỉ hỗ trợ tải nội dung văn bản!', 'error');
           }
         } catch (err) {
           console.error('Error parsing pdf:', err);
-          alert('Lỗi khi đọc file .pdf');
+          showToast('Lỗi khi đọc file .pdf', 'error');
         }
       };
       reader.readAsArrayBuffer(file);
     } else {
-      alert('Định dạng file không được hỗ trợ! Vui lòng dùng .txt, .doc, .docx hoặc .pdf');
+      showToast('Định dạng file không được hỗ trợ! Vui lòng dùng .txt, .doc, .docx hoặc .pdf', 'error');
     }
   };
 
@@ -721,7 +740,7 @@ export default function App() {
 
   const handleGenerateQuestionsWithAI = async () => {
     if (!newAssignment.content) {
-      alert('Vui lòng nhập nội dung bài đọc trước!');
+      showToast('Vui lòng nhập nội dung bài đọc trước!', 'error');
       return;
     }
     setIsGeneratingQuestions(true);
@@ -736,13 +755,13 @@ export default function App() {
       if (jsonMatch) {
         const generatedQuestions = JSON.parse(jsonMatch[0]);
         setNewAssignment(prev => ({ ...prev, questions: generatedQuestions }));
-        alert('Đã tạo câu hỏi thành công!');
+        showToast('Đã tạo câu hỏi thành công!', 'success');
       } else {
         throw new Error('Không tìm thấy định dạng JSON trong phản hồi AI.');
       }
     } catch (err) {
       console.error('AI Generation Error:', err);
-      alert('Lỗi khi tạo câu hỏi bằng AI. Vui lòng thử lại.');
+      showToast('Lỗi khi tạo câu hỏi bằng AI. Vui lòng thử lại.', 'error');
     } finally {
       setIsGeneratingQuestions(false);
     }
@@ -2443,7 +2462,7 @@ export default function App() {
                   try {
                     await addDoc(collection(db, 'speedrunQuestions'), srForm);
                     setSrForm({ text: '', answer: '', category: 'Tác giả' });
-                    alert('Đã thêm câu hỏi!');
+                    showToast('Đã thêm câu hỏi!', 'success');
                   } catch (error) {
                     handleFirestoreError(error, OperationType.CREATE, 'speedrunQuestions');
                   }
@@ -2495,10 +2514,30 @@ export default function App() {
     </div>
   );
 
-  if (role === 'home') return renderHome();
-  if (role === 'speedrun') return renderSpeedRunAdmin();
-  if (role === 'admin') {
-    return isAdminLoggedIn ? renderAdminDashboard() : renderAdminLogin();
-  }
-  return renderStudentView();
+  return (
+    <>
+      {role === 'home' && renderHome()}
+      {role === 'speedrun' && renderSpeedRunAdmin()}
+      {role === 'admin' && (isAdminLoggedIn ? renderAdminDashboard() : renderAdminLogin())}
+      {role === 'student' && renderStudentView()}
+
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className={`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl z-[9999] flex items-center gap-3 font-bold text-sm ${
+              toast.type === 'success' ? 'bg-emerald-600 text-white' : 
+              toast.type === 'error' ? 'bg-red-600 text-white' : 'bg-brand-900 text-white'
+            }`}
+          >
+            {toast.type === 'success' ? <CheckCircle2 size={18} /> : 
+             toast.type === 'error' ? <XCircle size={18} /> : <Bot size={18} />}
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
 }
