@@ -37,6 +37,10 @@
   @apply bg-gradient-to-br from-brand-600 to-brand-800;
 }
 
+.dark-blue-gradient {
+  @apply bg-gradient-to-br from-brand-800 to-brand-950;
+}
+
 .soft-blue-gradient {
   @apply bg-gradient-to-br from-brand-50 to-brand-100;
 }

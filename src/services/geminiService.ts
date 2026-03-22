@@ -1,6 +1,9 @@
 import { GoogleGenAI } from "@google/genai";
 
-const API_KEY = process.env.GEMINI_API_KEY || '';
+// Support both process.env (for AI Studio) and import.meta.env (for Vite/Netlify)
+const API_KEY = (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '') || 
+                ((import.meta as any).env?.VITE_GEMINI_API_KEY as string) || '';
+
 const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null;
 
 export async function getAIHelp(
@@ -54,6 +57,24 @@ export async function getAIHelp(
       systemInstruction,
       temperature: 0.7,
       tools: [{ googleSearch: {} }]
+    },
+  });
+
+  return response.text;
+}
+
+export async function generateAIContent(prompt: string, responseMimeType: string = 'text/plain') {
+  if (!ai) {
+    return "Lỗi: API Key chưa được cấu hình. Vui lòng kiểm tra cài đặt môi trường.";
+  }
+  const model = "gemini-3-flash-preview";
+  
+  const response = await ai.models.generateContent({
+    model,
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: {
+      temperature: 0.7,
+      responseMimeType
     },
   });
 

@@ -37,7 +37,9 @@ import {
   Save,
   Users,
   Bot,
-  Flame
+  Flame,
+  Sparkles,
+  UserPlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -59,7 +61,7 @@ import {
 } from 'firebase/firestore';
 import { signInWithPopup, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
-import { getAIHelp, searchAgent } from './services/geminiService';
+import { getAIHelp, searchAgent, generateAIContent } from './services/geminiService';
 import * as mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -176,12 +178,14 @@ interface UserProfile {
   rank: 'Đồng' | 'Bạc' | 'Vàng';
   streak: number;
   studentClass?: string;
+  role?: 'admin' | 'student';
   lastActive: any;
 }
 
 interface SpeedrunQuestion {
   id: string;
   text: string;
+  options: string[];
   answer: string;
   category: string;
 }
@@ -200,8 +204,9 @@ export default function App() {
     return localStorage.getItem('admin_logged_in') === 'true';
   });
   const [adminPassword, setAdminPassword] = useState('');
-  const [srForm, setSrForm] = useState({ text: '', answer: '', category: 'Tác giả' });
+  const [srForm, setSrForm] = useState({ text: '', options: ['', '', '', ''], answer: '', category: 'Tác giả' });
   
+  const [editingSrId, setEditingSrId] = useState<string | null>(null);
   const [showRankLeaderboard, setShowRankLeaderboard] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [allProfiles, setAllProfiles] = useState<UserProfile[]>([]);
@@ -211,6 +216,9 @@ export default function App() {
   const [speedrunQuestions, setSpeedrunQuestions] = useState<SpeedrunQuestion[]>([]);
   
   const [activeAssignment, setActiveAssignment] = useState<Assignment | null>(null);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isEditingPreview, setIsEditingPreview] = useState(false);
+  const [editingAssignmentId, setEditingAssignmentId] = useState<string | null>(null);
   const [studentClass, setStudentClass] = useState(() => localStorage.getItem('student_class') || '');
   const [isTakingQuiz, setIsTakingQuiz] = useState(false);
   const [quizStartTime, setQuizStartTime] = useState<number | null>(null);
@@ -228,6 +236,8 @@ export default function App() {
   const [streakCount, setStreakCount] = useState(0);
 
   const [showSearchAgent, setShowSearchAgent] = useState(false);
+  const [showRegistrationModal, setShowRegistrationModal] = useState(false);
+  const [regData, setRegData] = useState({ displayName: '', studentClass: '' });
   const [searchChatMessages, setSearchChatMessages] = useState<ChatMessage[]>([]);
   const [searchInput, setSearchInput] = useState('');
   const [isSearchLoading, setIsSearchLoading] = useState(false);
@@ -263,24 +273,46 @@ export default function App() {
     const profileRef = doc(db, 'profiles', u.uid);
     const profileSnap = await getDoc(profileRef);
     if (!profileSnap.exists()) {
-      const newProfile: UserProfile = {
-        userId: u.uid,
-        displayName: u.displayName || 'Học sinh',
-        email: u.email || '',
-        points: 0,
-        rank: 'Đồng',
-        streak: 0,
-        lastActive: serverTimestamp(),
-        studentClass: studentClass
-      };
-      await setDoc(profileRef, newProfile);
-      setProfile({ ...newProfile, lastActive: new Date() });
+      setShowRegistrationModal(true);
+      setRegData({ displayName: u.displayName || '', studentClass: studentClass });
     } else {
       const data = profileSnap.data() as UserProfile;
       setProfile(data);
+      if (data.role === 'admin') {
+        setIsAdminLoggedIn(true);
+        localStorage.setItem('admin_logged_in', 'true');
+      }
       if (studentClass && data.studentClass !== studentClass) {
         await updateDoc(profileRef, { studentClass });
       }
+    }
+  };
+
+  const handleCompleteRegistration = async () => {
+    if (!user || !regData.displayName || !regData.studentClass) {
+      showToast('Vui lòng điền đầy đủ thông tin!', 'error');
+      return;
+    }
+    const profileRef = doc(db, 'profiles', user.uid);
+    const newProfile: UserProfile = {
+      userId: user.uid,
+      displayName: regData.displayName,
+      email: user.email || '',
+      points: 0,
+      rank: 'Đồng',
+      streak: 0,
+      lastActive: serverTimestamp(),
+      studentClass: regData.studentClass
+    };
+    try {
+      await setDoc(profileRef, newProfile);
+      setProfile({ ...newProfile, lastActive: new Date() });
+      setStudentClass(regData.studentClass);
+      localStorage.setItem('student_class', regData.studentClass);
+      setShowRegistrationModal(false);
+      showToast('Đăng ký thành công!', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `profiles/${user.uid}`);
     }
   };
 
@@ -381,13 +413,39 @@ export default function App() {
     }
   };
 
-  const handleAdminLogin = (e: React.FormEvent) => {
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (adminPassword === 'admin123') {
       setIsAdminLoggedIn(true);
       localStorage.setItem('admin_logged_in', 'true');
       setAdminPassword('');
-      showToast('Đăng nhập thành công!', 'success');
+      
+      // Update Firestore profile to have admin role
+      if (user) {
+        const profileRef = doc(db, 'profiles', user.uid);
+        try {
+          await updateDoc(profileRef, { role: 'admin' });
+          setProfile(prev => prev ? { ...prev, role: 'admin' } : null);
+          showToast('Đăng nhập Admin thành công!', 'success');
+        } catch (error) {
+          console.error('Error updating admin role:', error);
+          // If profile doesn't exist, create it
+          try {
+            await setDoc(profileRef, { 
+              displayName: user.displayName || 'Admin', 
+              email: user.email || '', 
+              role: 'admin',
+              points: 0,
+              rank: 'Đồng',
+              streak: 0,
+              lastActive: serverTimestamp()
+            });
+            showToast('Đã tạo hồ sơ Admin thành công!', 'success');
+          } catch (setErr) {
+            handleFirestoreError(setErr, OperationType.WRITE, `profiles/${user.uid}`);
+          }
+        }
+      }
     } else {
       showToast('Sai mật khẩu!', 'error');
     }
@@ -407,14 +465,23 @@ export default function App() {
       return;
     }
     try {
-      await addDoc(collection(db, 'assignments'), {
-        ...newAssignment,
-        createdAt: serverTimestamp()
-      });
+      if (editingAssignmentId) {
+        await updateDoc(doc(db, 'assignments', editingAssignmentId), {
+          ...newAssignment,
+          updatedAt: serverTimestamp()
+        });
+        setEditingAssignmentId(null);
+        showToast('Đã cập nhật bài tập!', 'success');
+      } else {
+        await addDoc(collection(db, 'assignments'), {
+          ...newAssignment,
+          createdAt: serverTimestamp()
+        });
+        showToast('Đã thêm bài tập!', 'success');
+      }
       setNewAssignment({ title: '', description: '', content: '', questions: [], knowledgeBase: '' });
-      showToast('Đã thêm bài tập!', 'success');
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'assignments');
+      handleFirestoreError(error, editingAssignmentId ? OperationType.UPDATE : OperationType.CREATE, 'assignments');
     }
   };
 
@@ -560,12 +627,14 @@ export default function App() {
     setSpeedInput('');
   };
 
-  const handleSpeedSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSpeedSubmit = (e?: React.FormEvent, choice?: string) => {
+    if (e) e.preventDefault();
     if (!currentSpeedQuestion) return;
 
-    if (speedInput.trim().toLowerCase() === currentSpeedQuestion.answer.toLowerCase()) {
+    const studentAnswer = choice || speedInput;
+    if (studentAnswer.trim().toLowerCase() === currentSpeedQuestion.answer.toLowerCase()) {
       setSpeedRunScore(prev => prev + 1);
+      setSpeedRunTime(prev => prev + 15);
     }
     setNextSpeedQuestion();
   };
@@ -585,51 +654,85 @@ export default function App() {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'assignment' | 'answer' | 'speedrun' | 'global_kb' | 'assignment_kb') => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'assignment' | 'answer' | 'speedrun' | 'global_kb' | 'assignment_kb' | 'questions_only') => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const extension = file.name.split('.').pop()?.toLowerCase();
     const reader = new FileReader();
 
-    if (extension === 'txt') {
-      reader.onload = async (event) => {
-        const text = event.target?.result as string;
-        if (type === 'assignment') {
-          setNewAssignment(prev => ({ ...prev, content: text }));
-        } else if (type === 'global_kb') {
-          setGlobalKnowledgeBase(text);
-        } else if (type === 'assignment_kb') {
-          setNewAssignment(prev => ({ ...prev, knowledgeBase: text }));
-        } else if (type === 'answer') {
-          const lines = text.split('\n');
-          const updatedQuestions = [...(newAssignment.questions || [])];
-          lines.forEach((line, idx) => {
-            if (updatedQuestions[idx]) {
-              const parts = line.split('.');
-              const ans = parts.length > 1 ? parts[1].trim() : line.trim();
-              updatedQuestions[idx].answer = ans;
-            }
-          });
-          setNewAssignment(prev => ({ ...prev, questions: updatedQuestions }));
-        } else if (type === 'speedrun') {
-          const lines = text.split('\n');
-          for (const line of lines) {
-            const [qText, qAns, qCat] = line.split('|');
-            if (qText && qAns) {
+    const processText = async (text: string) => {
+      if (type === 'assignment') {
+        setNewAssignment(prev => ({ ...prev, content: text }));
+      } else if (type === 'global_kb') {
+        setGlobalKnowledgeBase(text);
+      } else if (type === 'assignment_kb') {
+        setNewAssignment(prev => ({ ...prev, knowledgeBase: text }));
+      } else if (type === 'questions_only') {
+        const questionBlocks = text.split(/Câu\s*\d+[\.\:\)]/i).filter(b => b.trim().length > 0);
+        const recognizedQuestions: Question[] = questionBlocks.map(block => {
+          return { text: block.trim(), type: 'short-answer', options: ['', '', '', ''], answer: '' };
+        });
+        setNewAssignment(prev => ({ ...prev, questions: [...(prev.questions || []), ...recognizedQuestions] }));
+        showToast(`Đã nhận dạng ${recognizedQuestions.length} câu hỏi!`, 'success');
+      } else if (type === 'answer') {
+        const answerBlocks = text.split(/Câu\s*\d+[\.\:\)]/i).filter(b => b.trim().length > 0);
+        const updatedQuestions = [...(newAssignment.questions || [])];
+        answerBlocks.forEach((block, idx) => {
+          if (updatedQuestions[idx]) {
+            updatedQuestions[idx].answer = block.trim();
+          }
+        });
+        setNewAssignment(prev => ({ ...prev, questions: updatedQuestions }));
+        showToast(`Đã cập nhật ${answerBlocks.length} đáp án!`, 'success');
+      } else if (type === 'speedrun') {
+        const questionBlocks = text.split(/Câu\s*\d+[\.\:\)]/i).filter(b => b.trim().length > 0);
+        if (questionBlocks.length > 0) {
+          for (const block of questionBlocks) {
+            const lines = block.trim().split('\n').filter(l => l.trim().length > 0);
+            if (lines.length >= 2) {
+              const questionText = lines[0].trim();
+              const options = lines.slice(1, 5).map(l => l.replace(/^[A-D][\.\:\)]\s*/i, '').trim());
+              while (options.length < 4) options.push('');
+              
               try {
                 await addDoc(collection(db, 'speedrunQuestions'), {
-                  text: qText.trim(),
-                  answer: qAns.trim(),
-                  category: qCat?.trim() || 'Tác giả'
+                  text: questionText,
+                  options: options,
+                  answer: 'A',
+                  category: 'Tác giả'
                 });
               } catch (error) {
                 handleFirestoreError(error, OperationType.CREATE, 'speedrunQuestions');
               }
             }
           }
-          showToast('Đã tải lên câu hỏi Speed Run!', 'success');
+        } else {
+          const lines = text.split('\n').filter(l => l.trim().length > 0);
+          for (const line of lines) {
+            const parts = line.split('|');
+            if (parts.length >= 6) {
+              try {
+                await addDoc(collection(db, 'speedrunQuestions'), {
+                  text: parts[0].trim(),
+                  options: [parts[1].trim(), parts[2].trim(), parts[3].trim(), parts[4].trim()],
+                  answer: parts[5].trim(),
+                  category: parts[6]?.trim() || 'Tác giả'
+                });
+              } catch (error) {
+                handleFirestoreError(error, OperationType.CREATE, 'speedrunQuestions');
+              }
+            }
+          }
         }
+        showToast('Đã tải lên câu hỏi Speed Run!', 'success');
+      }
+    };
+
+    if (extension === 'txt') {
+      reader.onload = async (event) => {
+        const text = event.target?.result as string;
+        await processText(text);
       };
       reader.readAsText(file);
     } else if (extension === 'docx' || extension === 'doc') {
@@ -637,16 +740,7 @@ export default function App() {
         const arrayBuffer = event.target?.result as ArrayBuffer;
         try {
           const result = await mammoth.extractRawText({ arrayBuffer });
-          const text = result.value;
-          if (type === 'assignment') {
-            setNewAssignment(prev => ({ ...prev, content: text }));
-          } else if (type === 'global_kb') {
-            setGlobalKnowledgeBase(text);
-          } else if (type === 'assignment_kb') {
-            setNewAssignment(prev => ({ ...prev, knowledgeBase: text }));
-          } else {
-            showToast('File .docx chỉ hỗ trợ tải nội dung văn bản!', 'error');
-          }
+          await processText(result.value);
         } catch (err) {
           console.error('Error parsing docx:', err);
           showToast('Lỗi khi đọc file .docx', 'error');
@@ -665,15 +759,7 @@ export default function App() {
             const pageText = textContent.items.map((item: any) => item.str).join(' ');
             fullText += pageText + '\n';
           }
-          if (type === 'assignment') {
-            setNewAssignment(prev => ({ ...prev, content: fullText }));
-          } else if (type === 'global_kb') {
-            setGlobalKnowledgeBase(fullText);
-          } else if (type === 'assignment_kb') {
-            setNewAssignment(prev => ({ ...prev, knowledgeBase: fullText }));
-          } else {
-            showToast('File .pdf chỉ hỗ trợ tải nội dung văn bản!', 'error');
-          }
+          await processText(fullText);
         } catch (err) {
           console.error('Error parsing pdf:', err);
           showToast('Lỗi khi đọc file .pdf', 'error');
@@ -745,23 +831,73 @@ export default function App() {
     }
     setIsGeneratingQuestions(true);
     try {
-      const prompt = `Dựa trên nội dung sau, hãy tạo 5 câu hỏi trắc nghiệm (multiple-choice) và 5 câu hỏi điền khuyết (short-answer). 
-      Định dạng trả về là JSON array của các đối tượng { text: string, type: 'multiple-choice' | 'short-answer', options: string[], answer: string }.
+      const prompt = `Dựa trên nội dung sau, hãy tạo 10 câu hỏi tự luận ngắn (short-answer). 
+      Định dạng trả về là JSON array của các đối tượng { text: string, type: 'short-answer', options: ['', '', '', ''], answer: string }.
+      Lưu ý: 
+      - Đáp án phải ngắn gọn, súc tích.
+      - KHÔNG được lấy nguyên văn các câu trong nội dung bài học để làm câu hỏi. Hãy diễn đạt lại hoặc hỏi về ý nghĩa, nội dung.
       Nội dung: ${newAssignment.content}`;
       
-      const response = await getAIHelp(prompt, '', '', '', '', []);
+      const response = await generateAIContent(prompt, 'application/json');
       // Extract JSON from response
       const jsonMatch = response.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
         const generatedQuestions = JSON.parse(jsonMatch[0]);
         setNewAssignment(prev => ({ ...prev, questions: generatedQuestions }));
-        showToast('Đã tạo câu hỏi thành công!', 'success');
+        showToast('Đã tạo câu hỏi tự luận thành công!', 'success');
       } else {
         throw new Error('Không tìm thấy định dạng JSON trong phản hồi AI.');
       }
     } catch (err) {
       console.error('AI Generation Error:', err);
       showToast('Lỗi khi tạo câu hỏi bằng AI. Vui lòng thử lại.', 'error');
+    } finally {
+      setIsGeneratingQuestions(false);
+    }
+  };
+
+  const handleAutoGenerateAssignment = async () => {
+    setIsGeneratingQuestions(true);
+    try {
+      const topic = prompt('Nhập chủ đề hoặc tác phẩm bạn muốn tạo bài tập (VD: Lão Hạc, Vợ chồng A Phủ...):');
+      if (!topic) return;
+
+      const difficulty = newAssignment.difficulty || 'Trung bình';
+      
+      const promptText = `Hãy tạo một bài tập đọc hiểu văn học hoàn chỉnh về chủ đề: "${topic}" với độ khó "${difficulty}".
+      Yêu cầu:
+      - Tiêu đề bài tập hấp dẫn.
+      - Một đoạn văn bản đọc hiểu (khoảng 300-500 chữ) liên quan đến chủ đề.
+      - 5 câu hỏi đọc hiểu tự luận ngắn kèm đáp án.
+      - Trả về định dạng JSON: 
+      {
+        "title": "Tiêu đề",
+        "description": "Mô tả ngắn",
+        "content": "Nội dung văn bản",
+        "questions": [
+          { "text": "câu hỏi", "type": "short-answer", "options": ["", "", "", ""], "answer": "đáp án" }
+        ]
+      }`;
+
+      const response = await generateAIContent(promptText, 'application/json');
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const generated = JSON.parse(jsonMatch[0]);
+        setNewAssignment(prev => ({
+          ...prev,
+          title: generated.title,
+          description: generated.description,
+          content: generated.content,
+          questions: generated.questions,
+          category: 'Đọc hiểu'
+        }));
+        showToast('Đã tự động tạo bài tập mới!', 'success');
+      } else {
+        throw new Error('Không tìm thấy định dạng JSON trong phản hồi AI.');
+      }
+    } catch (error) {
+      console.error('Auto Generate Error:', error);
+      showToast('Lỗi khi tự động tạo bài tập', 'error');
     } finally {
       setIsGeneratingQuestions(false);
     }
@@ -1235,7 +1371,7 @@ export default function App() {
                   />
                 </div>
 
-                <div className="flex justify-center mb-12">
+                <div className="flex flex-col md:flex-row justify-center mb-12 gap-4">
                   <motion.button
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
@@ -1246,136 +1382,200 @@ export default function App() {
                     <BrainCircuit className={`w-6 h-6 ${isGeneratingQuestions ? 'animate-spin' : ''}`} />
                     {isGeneratingQuestions ? 'ĐANG TẠO CÂU HỎI...' : 'TẠO CÂU HỎI BẰNG AI'}
                   </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleAutoGenerateAssignment}
+                    disabled={isGeneratingQuestions}
+                    className="px-8 py-4 bg-brand-100 text-brand-600 rounded-2xl font-black flex items-center gap-3 border-2 border-brand-200 hover:bg-brand-200 transition-all disabled:opacity-50"
+                  >
+                    <Sparkles className={`w-6 h-6 ${isGeneratingQuestions ? 'animate-spin' : ''}`} />
+                    {isGeneratingQuestions ? 'ĐANG TẠO BÀI TẬP...' : 'TẠO BÀI TẬP TỰ ĐỘNG'}
+                  </motion.button>
                 </div>
 
                 <div className="space-y-8 mb-12">
-                  <div className="flex justify-between items-center">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                     <h3 className="text-2xl font-black text-brand-900 tracking-tight">Câu hỏi & Đáp án</h3>
-                    <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-100 transition-all">
-                      <Upload className="w-4 h-4" /> Tải file đáp án (.txt)
-                      <input type="file" accept=".txt" onChange={e => handleFileUpload(e, 'answer')} className="hidden" />
-                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-brand-600 hover:text-brand-700 bg-brand-50 px-3 py-1.5 rounded-xl border border-brand-100 transition-all">
+                        <Upload className="w-4 h-4" /> Tải file câu hỏi (.docx, .pdf, .txt)
+                        <input type="file" accept=".txt,.doc,.docx,.pdf" onChange={e => handleFileUpload(e, 'questions_only')} className="hidden" />
+                      </label>
+                      <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-100 transition-all">
+                        <Upload className="w-4 h-4" /> Tải file đáp án (.docx, .pdf, .txt)
+                        <input type="file" accept=".txt,.doc,.docx,.pdf" onChange={e => handleFileUpload(e, 'answer')} className="hidden" />
+                      </label>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-1 gap-6">
-                  {newAssignment.questions?.map((q, idx) => (
-                    <motion.div 
-                      key={idx}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      className="p-8 bg-brand-50/30 rounded-3xl border-2 border-brand-100/50 relative group"
-                    >
-                      <div className="absolute -top-4 -left-4 w-10 h-10 bg-brand-600 text-white rounded-xl flex items-center justify-center font-black shadow-lg shadow-brand-500/20">
-                        {idx + 1}
-                      </div>
-                      <div className="grid gap-6">
-                        <div className="flex flex-col md:flex-row gap-4">
-                          <input 
-                            type="text" 
-                            value={q.text}
-                            onChange={e => {
-                              const qs = [...(newAssignment.questions || [])];
-                              qs[idx].text = e.target.value;
-                              setNewAssignment({...newAssignment, questions: qs});
-                            }}
-                            className="flex-1 bg-white border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all"
-                            placeholder={`Nhập câu hỏi ${idx + 1}...`}
-                          />
-                          <select 
-                            value={q.type}
-                            onChange={e => {
-                              const qs = [...(newAssignment.questions || [])];
-                              qs[idx].type = e.target.value as any;
-                              setNewAssignment({...newAssignment, questions: qs});
-                            }}
-                            className="px-6 py-4 bg-white border-2 border-brand-100 rounded-2xl font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all appearance-none cursor-pointer"
-                          >
-                            <option value="short-answer">Điền khuyết</option>
-                            <option value="multiple-choice">Trắc nghiệm</option>
-                          </select>
-                        </div>
-                        
-                        {q.type === 'multiple-choice' && (
-                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                            {q.options.map((opt, oIdx) => (
-                              <div key={oIdx} className="relative">
-                                <span className="absolute left-4 top-1/2 -translate-y-1/2 font-black text-brand-300 text-xs">
-                                  {String.fromCharCode(65 + oIdx)}
-                                </span>
-                                <input 
-                                  type="text"
-                                  value={opt}
-                                  onChange={e => {
-                                    const qs = [...(newAssignment.questions || [])];
-                                    qs[idx].options[oIdx] = e.target.value;
-                                    setNewAssignment({...newAssignment, questions: qs});
-                                  }}
-                                  className="w-full bg-white border-2 border-brand-100 rounded-xl pl-10 pr-4 py-3 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all text-sm"
-                                  placeholder={`Lựa chọn ${String.fromCharCode(65 + oIdx)}`}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                  <div className="p-8 bg-brand-50/30 rounded-3xl border-2 border-dashed border-brand-200 text-center">
+                    <p className="text-brand-400 font-bold italic">Danh sách câu hỏi và đáp án sẽ được tự động nhận dạng từ file tải lên hoặc tạo bằng AI.</p>
+                    <p className="text-brand-600 font-black mt-2">Hiện có: {newAssignment.questions?.length || 0} câu hỏi</p>
+                  </div>
+                </div>
 
-                        <div className="flex flex-col md:flex-row gap-6 items-end md:items-center">
-                          <div className="flex-1 w-full">
-                            <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Đáp án đúng</label>
-                            <input 
-                              type="text"
-                              value={q.answer}
-                              onChange={e => {
-                                const qs = [...(newAssignment.questions || [])];
-                                qs[idx].answer = e.target.value;
-                                setNewAssignment({...newAssignment, questions: qs});
-                              }}
-                              className="w-full bg-white border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all"
-                              placeholder={q.type === 'multiple-choice' ? 'A' : 'Nhập đáp án đúng...'}
-                            />
-                          </div>
-                          <button 
-                            onClick={() => {
-                              const qs = (newAssignment.questions || []).filter((_, i) => i !== idx);
-                              setNewAssignment({...newAssignment, questions: qs});
-                            }}
-                            className="p-4 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-2xl transition-all"
-                          >
-                            <Trash2 className="w-6 h-6" />
-                          </button>
-                        </div>
-                      </div>
-                    </motion.div>
-                  ))}
+                <div className="flex gap-4">
                   <motion.button 
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
-                    onClick={() => setNewAssignment(prev => ({...prev, questions: [...(prev.questions || []), { text: '', type: 'short-answer', options: ['', '', '', ''], answer: '' }] }))} 
-                    className="w-full py-6 border-2 border-dashed border-brand-200 rounded-3xl text-brand-600 font-black flex items-center justify-center gap-3 hover:bg-brand-50 hover:border-brand-500 transition-all"
+                    onClick={() => setIsPreviewing(true)}
+                    className="flex-1 bg-brand-100 text-brand-900 font-black py-6 rounded-3xl border-2 border-brand-200 flex items-center justify-center gap-4 text-xl"
                   >
-                    <PlusCircle className="w-5 h-5" /> THÊM CÂU HỎI MỚI
+                    <Eye className="w-8 h-8" /> XEM TRƯỚC
+                  </motion.button>
+                  <motion.button 
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleAddAssignment}
+                    className="flex-[2] dark-blue-gradient text-white font-black py-6 rounded-3xl shadow-2xl shadow-brand-900/40 flex items-center justify-center gap-4 text-xl border-4 border-brand-600"
+                  >
+                    <PlusCircle className="w-8 h-8" /> {editingAssignmentId ? 'CẬP NHẬT BÀI TẬP' : 'TẠO BÀI TẬP NGAY'}
                   </motion.button>
                 </div>
-              </div>
-
-              <div className="mb-8">
-                  <label className="block text-sm font-medium text-stone-700 mb-2">Tài liệu dạy AI (Knowledge Base)</label>
-                  <textarea 
-                    rows={4}
-                    value={newAssignment.knowledgeBase}
-                    onChange={e => setNewAssignment({...newAssignment, knowledgeBase: e.target.value})}
-                    className="w-full px-4 py-3 rounded-xl border border-stone-200 outline-none focus:ring-2 focus:ring-indigo-500"
-                    placeholder="Nhập thông tin bổ sung để AI hỗ trợ học sinh tốt hơn..."
-                  />
-                </div>
-
-                <motion.button 
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleAddAssignment}
-                  className="w-full blue-gradient text-white font-black py-6 rounded-3xl shadow-2xl shadow-brand-500/40 flex items-center justify-center gap-4 text-xl"
-                >
-                  <PlusCircle className="w-8 h-8" /> TẠO BÀI TẬP NGAY
-                </motion.button>
               </motion.div>
+
+              {isPreviewing && (
+                <div className="fixed inset-0 bg-brand-950/90 backdrop-blur-xl z-[100] flex items-center justify-center p-4">
+                  <motion.div 
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="bg-white w-full max-w-5xl max-h-[90vh] rounded-[40px] overflow-hidden flex flex-col shadow-2xl"
+                  >
+                    <div className="p-8 border-b border-brand-100 flex justify-between items-center bg-brand-50/50">
+                      <div>
+                        <h2 className="text-3xl font-black text-brand-900 tracking-tight">Xem trước bài tập</h2>
+                        <p className="text-brand-400 font-bold text-xs uppercase tracking-widest mt-1">Giao diện học sinh sẽ nhìn thấy</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button 
+                          onClick={() => setIsEditingPreview(!isEditingPreview)}
+                          className={`px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-sm border ${
+                            isEditingPreview ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-white text-brand-600 border-brand-100 hover:bg-brand-50'
+                          }`}
+                        >
+                          {isEditingPreview ? 'XONG' : 'CHỈNH SỬA'}
+                        </button>
+                        <button 
+                          onClick={() => { setIsPreviewing(false); setIsEditingPreview(false); }}
+                          className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center text-brand-400 hover:text-brand-600 shadow-sm border border-brand-100 transition-all"
+                        >
+                          <XCircle className="w-6 h-6" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-10 space-y-10">
+                      <div className="max-w-3xl mx-auto space-y-10">
+                        <div className="space-y-4">
+                          {isEditingPreview ? (
+                            <input 
+                              type="text" 
+                              value={newAssignment.title}
+                              onChange={e => setNewAssignment({...newAssignment, title: e.target.value})}
+                              className="text-4xl font-black text-brand-900 leading-tight w-full bg-brand-50 border-2 border-brand-100 rounded-2xl px-4 py-2 outline-none focus:border-brand-500"
+                            />
+                          ) : (
+                            <h1 className="text-4xl font-black text-brand-900 leading-tight">{newAssignment.title}</h1>
+                          )}
+                          <div className="flex items-center gap-4">
+                            <span className="px-4 py-1.5 bg-brand-100 text-brand-600 rounded-xl font-black text-[10px] uppercase tracking-widest">
+                              {newAssignment.category}
+                            </span>
+                            <span className="px-4 py-1.5 bg-amber-100 text-amber-600 rounded-xl font-black text-[10px] uppercase tracking-widest">
+                              {newAssignment.difficulty}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="prose prose-brand max-w-none">
+                          {isEditingPreview ? (
+                            <textarea 
+                              value={newAssignment.content}
+                              onChange={e => setNewAssignment({...newAssignment, content: e.target.value})}
+                              className="w-full h-64 bg-brand-50/30 p-8 rounded-[32px] border-2 border-brand-100 outline-none focus:border-brand-500 leading-relaxed text-brand-900 font-medium"
+                            />
+                          ) : (
+                            <div className="bg-brand-50/30 p-8 rounded-[32px] border-2 border-brand-100/50 leading-relaxed text-brand-900 font-medium whitespace-pre-wrap">
+                              {newAssignment.content}
+                            </div>
+                          )}
+                        </div>
+                        <div className="space-y-8">
+                          <h3 className="text-2xl font-black text-brand-900 flex items-center gap-3">
+                            <div className="w-2 h-8 bg-brand-600 rounded-full" />
+                            Câu hỏi luyện tập
+                          </h3>
+                          {newAssignment.questions?.map((q, idx) => (
+                            <div key={idx} className="p-8 bg-white rounded-[32px] border-2 border-brand-100 shadow-sm space-y-6">
+                              <div className="flex gap-4">
+                                <div className="w-10 h-10 bg-brand-600 text-white rounded-xl flex items-center justify-center font-black shrink-0">
+                                  {idx + 1}
+                                </div>
+                                {isEditingPreview ? (
+                                  <div className="flex-1 space-y-4">
+                                    <input 
+                                      type="text" 
+                                      value={q.text}
+                                      onChange={e => {
+                                        const updated = [...(newAssignment.questions || [])];
+                                        updated[idx].text = e.target.value;
+                                        setNewAssignment({...newAssignment, questions: updated});
+                                      }}
+                                      className="text-xl font-bold text-brand-900 w-full bg-brand-50 border-2 border-brand-100 rounded-2xl px-4 py-2 outline-none focus:border-brand-500"
+                                    />
+                                    <input 
+                                      type="text" 
+                                      placeholder="Đáp án đúng..."
+                                      value={q.answer}
+                                      onChange={e => {
+                                        const updated = [...(newAssignment.questions || [])];
+                                        updated[idx].answer = e.target.value;
+                                        setNewAssignment({...newAssignment, questions: updated});
+                                      }}
+                                      className="text-sm font-bold text-emerald-600 w-full bg-emerald-50 border-2 border-emerald-100 rounded-2xl px-4 py-2 outline-none focus:border-emerald-500"
+                                    />
+                                  </div>
+                                ) : (
+                                  <p className="text-xl font-bold text-brand-900 pt-1">{q.text}</p>
+                                )}
+                              </div>
+                              {q.type === 'multiple-choice' ? (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 ml-14">
+                                  {q.options.map((opt, oIdx) => (
+                                    <div key={oIdx} className="p-4 bg-brand-50 border-2 border-brand-100 rounded-2xl font-bold text-brand-600 flex items-center gap-3">
+                                      <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center text-xs font-black border border-brand-100">
+                                        {String.fromCharCode(65 + oIdx)}
+                                      </div>
+                                      {isEditingPreview ? (
+                                        <input 
+                                          type="text" 
+                                          value={opt}
+                                          onChange={e => {
+                                            const updated = [...(newAssignment.questions || [])];
+                                            updated[idx].options[oIdx] = e.target.value;
+                                            setNewAssignment({...newAssignment, questions: updated});
+                                          }}
+                                          className="flex-1 bg-transparent border-none outline-none"
+                                        />
+                                      ) : (
+                                        opt
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="ml-14">
+                                  <div className="w-full bg-brand-50 border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-400 italic">
+                                    Học sinh sẽ nhập câu trả lời tại đây...
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
 
               {/* Assignments List */}
               <div className="space-y-8">
@@ -1413,14 +1613,36 @@ export default function App() {
                               </div>
                             </div>
                           </div>
-                          <motion.button 
-                            whileHover={{ scale: 1.1, rotate: 90 }}
-                            whileTap={{ scale: 0.9 }}
-                            onClick={() => handleDeleteAssignment(assignment.id)}
-                            className="p-3 text-brand-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
-                          >
-                            <Trash2 className="w-6 h-6" />
-                          </motion.button>
+                          <div className="flex items-center gap-2">
+                            <motion.button 
+                              whileHover={{ scale: 1.1 }}
+                              whileTap={{ scale: 0.9 }}
+                              onClick={() => {
+                                setNewAssignment({
+                                  title: assignment.title,
+                                  description: assignment.description,
+                                  category: assignment.category,
+                                  difficulty: assignment.difficulty,
+                                  content: assignment.content,
+                                  questions: assignment.questions,
+                                  knowledgeBase: assignment.knowledgeBase
+                                });
+                                setEditingAssignmentId(assignment.id);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                              }}
+                              className="p-3 text-brand-400 hover:text-brand-600 hover:bg-brand-50 rounded-xl transition-all"
+                            >
+                              <Save className="w-6 h-6" />
+                            </motion.button>
+                            <motion.button 
+                              whileHover={{ scale: 1.1, rotate: 90 }}
+                              whileTap={{ scale: 0.9 }}
+                              onClick={() => handleDeleteAssignment(assignment.id)}
+                              className="p-3 text-brand-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                            >
+                              <Trash2 className="w-6 h-6" />
+                            </motion.button>
+                          </div>
                         </div>
                         <h4 className="text-2xl font-black text-brand-900 mb-3 group-hover:text-brand-600 transition-colors">{assignment.title}</h4>
                         <p className="text-sm text-brand-500 font-medium line-clamp-2 mb-8 leading-relaxed">{assignment.description}</p>
@@ -1587,7 +1809,7 @@ export default function App() {
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={handleSaveGlobalKB}
-                    className="px-10 py-5 bg-gradient-to-r from-brand-600 to-brand-500 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-brand-500/40 hover:shadow-brand-500/60 transition-all flex items-center gap-3"
+                    className="px-10 py-5 bg-brand-900 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-brand-900/40 hover:shadow-brand-900/60 transition-all flex items-center gap-3"
                   >
                     <Save className="w-5 h-5" />
                     LƯU CẤU HÌNH AI
@@ -1910,8 +2132,10 @@ export default function App() {
               <div className="lg:col-span-2 space-y-6">
                 <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm">
                   <h2 className="text-2xl font-bold mb-6">{activeAssignment.title}</h2>
-                  <div className="prose prose-stone max-w-none text-stone-700 leading-relaxed whitespace-pre-wrap">
-                    {activeAssignment.content}
+                  <div className="prose prose-stone max-w-none text-stone-700 leading-relaxed">
+                    <div className="markdown-body text-lg">
+                      <Markdown>{activeAssignment.content}</Markdown>
+                    </div>
                   </div>
                 </div>
 
@@ -2162,9 +2386,20 @@ export default function App() {
                   </div>
                   <button onClick={handleEndSpeedRun} className="p-2 hover:bg-white/10 rounded-full"><XCircle className="w-6 h-6" /></button>
                 </div>
+                
+                {/* Timer Progress Bar */}
+                <div className="w-full bg-indigo-900/20 h-2">
+                  <motion.div 
+                    className="bg-white h-full"
+                    initial={{ width: '100%' }}
+                    animate={{ width: `${Math.min((speedRunTime / 60) * 100, 100)}%` }}
+                    transition={{ duration: 1, ease: "linear" }}
+                  />
+                </div>
+
                 <div className="p-10">
                   {currentSpeedQuestion ? (
-                    <form onSubmit={handleSpeedSubmit} className="space-y-8">
+                    <div className="space-y-8">
                       <div className="text-center">
                         <span className="px-3 py-1 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded-lg uppercase mb-4 inline-block">
                           {currentSpeedQuestion.category}
@@ -2173,18 +2408,41 @@ export default function App() {
                           {currentSpeedQuestion.text}
                         </h3>
                       </div>
-                      <input 
-                        autoFocus
-                        type="text" 
-                        value={speedInput}
-                        onChange={e => setSpeedInput(e.target.value)}
-                        className="w-full px-6 py-5 bg-stone-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none text-center text-2xl font-bold"
-                        placeholder="Nhập câu trả lời..."
-                      />
-                      <button type="submit" className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-indigo-200">
-                        Gửi (Enter)
-                      </button>
-                    </form>
+
+                      {currentSpeedQuestion.options && currentSpeedQuestion.options.some(opt => opt.trim() !== '') ? (
+                        <div className="grid grid-cols-1 gap-3">
+                          {currentSpeedQuestion.options.map((opt, idx) => {
+                            const label = String.fromCharCode(65 + idx);
+                            return (
+                              <button
+                                key={idx}
+                                onClick={() => handleSpeedSubmit(undefined, label)}
+                                className="w-full p-5 rounded-2xl border-2 border-stone-100 hover:border-indigo-500 hover:bg-indigo-50 text-left transition-all flex items-center gap-4 group"
+                              >
+                                <span className="w-10 h-10 rounded-xl bg-stone-100 group-hover:bg-indigo-600 group-hover:text-white flex items-center justify-center font-black transition-colors">
+                                  {label}
+                                </span>
+                                <span className="font-bold text-lg text-stone-700">{opt}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <form onSubmit={handleSpeedSubmit} className="space-y-6">
+                          <input 
+                            autoFocus
+                            type="text" 
+                            value={speedInput}
+                            onChange={e => setSpeedInput(e.target.value)}
+                            className="w-full px-6 py-5 bg-stone-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none text-center text-2xl font-bold"
+                            placeholder="Nhập câu trả lời..."
+                          />
+                          <button type="submit" className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-lg shadow-lg shadow-indigo-200">
+                            Gửi (Enter)
+                          </button>
+                        </form>
+                      )}
+                    </div>
                   ) : (
                     <div className="text-center py-10">Đang tải câu hỏi...</div>
                   )}
@@ -2231,6 +2489,7 @@ export default function App() {
                   {isAiLoading && <div className="flex justify-start"><div className="bg-stone-100 p-4 rounded-2xl animate-pulse">AI đang suy nghĩ...</div></div>}
                 </div>
                 <div className="p-6 border-t border-stone-100">
+                  <p className="text-[10px] text-stone-400 text-center mb-3 font-bold italic">Tài liệu chỉ mang tính chất tham khảo, cần chứng thực rõ ràng.</p>
                   <div className="relative">
                     <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleAIChat()} placeholder="Hỏi AI về kiến thức văn học..." className="w-full pl-6 pr-16 py-4 bg-stone-50 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500" />
                     <button onClick={handleAIChat} className="absolute right-3 top-1/2 -translate-y-1/2 p-3 bg-emerald-600 text-white rounded-xl"><Send className="w-5 h-5" /></button>
@@ -2274,6 +2533,7 @@ export default function App() {
                   {isSearchLoading && <div className="flex justify-start"><div className="bg-stone-100 p-4 rounded-2xl animate-pulse">Đang tìm kiếm thông tin...</div></div>}
                 </div>
                 <div className="p-6 border-t border-stone-100">
+                  <p className="text-[10px] text-stone-400 text-center mb-3 font-bold italic">Tài liệu chỉ mang tính chất tham khảo, cần chứng thực rõ ràng.</p>
                   <div className="relative">
                     <input type="text" value={searchInput} onChange={e => setSearchInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleSearchAgent()} placeholder="Hỏi về tin tức, sự kiện hoặc kiểm chứng thông tin..." className="w-full pl-6 pr-16 py-4 bg-stone-50 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500" />
                     <button onClick={handleSearchAgent} className="absolute right-3 top-1/2 -translate-y-1/2 p-3 bg-stone-900 text-white rounded-xl"><Send className="w-5 h-5" /></button>
@@ -2424,55 +2684,102 @@ export default function App() {
 
             <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm">
               <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold">Thêm câu hỏi mới</h2>
+                <h2 className="text-xl font-bold">{editingSrId ? 'Cập nhật câu hỏi' : 'Thêm câu hỏi mới (4 lựa chọn)'}</h2>
                 <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700">
-                  <Upload className="w-4 h-4" /> Tải file câu hỏi (.txt)
-                  <input type="file" accept=".txt" onChange={e => handleFileUpload(e, 'speedrun')} className="hidden" />
+                  <Upload className="w-4 h-4" /> Tải file câu hỏi (.docx, .pdf, .txt)
+                  <input type="file" accept=".txt,.doc,.docx,.pdf" onChange={e => handleFileUpload(e, 'speedrun')} className="hidden" />
                 </label>
               </div>
-              <div className="grid grid-cols-2 gap-4 mb-4">
-              <input 
-                type="text" 
-                placeholder="Câu hỏi (VD: Tác giả Vợ chồng A Phủ?)" 
-                className="px-4 py-3 rounded-xl border border-stone-200 outline-none" 
-                value={srForm.text}
-                onChange={e => setSrForm({...srForm, text: e.target.value})}
-              />
-              <input 
-                type="text" 
-                placeholder="Đáp án (VD: Tô Hoài)" 
-                className="px-4 py-3 rounded-xl border border-stone-200 outline-none" 
-                value={srForm.answer}
-                onChange={e => setSrForm({...srForm, answer: e.target.value})}
-              />
+              <div className="space-y-4 mb-6">
+                <input 
+                  type="text" 
+                  placeholder="Câu hỏi (VD: Tác giả Vợ chồng A Phủ?)" 
+                  className="w-full px-4 py-3 rounded-xl border border-stone-200 outline-none" 
+                  value={srForm.text}
+                  onChange={e => setSrForm({...srForm, text: e.target.value})}
+                />
+                <div className="grid grid-cols-2 gap-4">
+                  {srForm.options.map((opt, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className="font-bold text-stone-400">{String.fromCharCode(65 + idx)}</span>
+                      <input 
+                        type="text"
+                        placeholder={`Lựa chọn ${String.fromCharCode(65 + idx)}`}
+                        className="flex-1 px-4 py-2 rounded-xl border border-stone-200 outline-none text-sm"
+                        value={opt}
+                        onChange={e => {
+                          const newOpts = [...srForm.options];
+                          newOpts[idx] = e.target.value;
+                          setSrForm({...srForm, options: newOpts});
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-stone-400 uppercase ml-1">Đáp án đúng (A, B, C, hoặc D)</label>
+                    <input 
+                      type="text" 
+                      placeholder="VD: A" 
+                      className="px-4 py-3 rounded-xl border border-stone-200 outline-none uppercase" 
+                      value={srForm.answer}
+                      onChange={e => setSrForm({...srForm, answer: e.target.value.toUpperCase()})}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-stone-400 uppercase ml-1">Thể loại</label>
+                    <select 
+                      className="px-4 py-3 rounded-xl border border-stone-200 outline-none"
+                      value={srForm.category}
+                      onChange={e => setSrForm({...srForm, category: e.target.value})}
+                    >
+                      <option>Tác giả</option>
+                      <option>Năm sáng tác</option>
+                      <option>Phong cách</option>
+                      <option>Nội dung</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end gap-3">
+                {editingSrId && (
+                  <button 
+                    onClick={() => {
+                      setEditingSrId(null);
+                      setSrForm({ text: '', options: ['', '', '', ''], answer: '', category: 'Tác giả' });
+                    }}
+                    className="px-6 py-3 bg-stone-100 text-stone-600 rounded-xl font-bold"
+                  >
+                    Hủy
+                  </button>
+                )}
+                <button 
+                  onClick={async () => {
+                    if (!srForm.text || !srForm.answer) {
+                      showToast('Vui lòng điền đầy đủ câu hỏi và đáp án!', 'error');
+                      return;
+                    }
+                    try {
+                      if (editingSrId) {
+                        await updateDoc(doc(db, 'speedrunQuestions', editingSrId), srForm);
+                        setEditingSrId(null);
+                        showToast('Đã cập nhật câu hỏi!', 'success');
+                      } else {
+                        await addDoc(collection(db, 'speedrunQuestions'), srForm);
+                        showToast('Đã thêm câu hỏi Speed Run!', 'success');
+                      }
+                      setSrForm({ text: '', options: ['', '', '', ''], answer: '', category: 'Tác giả' });
+                    } catch (error) {
+                      handleFirestoreError(error, editingSrId ? OperationType.UPDATE : OperationType.CREATE, 'speedrunQuestions');
+                    }
+                  }}
+                  className="px-10 py-3 bg-brand-900 text-white rounded-xl font-bold shadow-lg shadow-brand-900/20"
+                >
+                  {editingSrId ? 'Cập nhật' : 'Thêm câu hỏi'}
+                </button>
+              </div>
             </div>
-            <div className="flex gap-4 mb-6">
-              <select 
-                className="flex-1 px-4 py-3 rounded-xl border border-stone-200 outline-none"
-                value={srForm.category}
-                onChange={e => setSrForm({...srForm, category: e.target.value})}
-              >
-                <option>Tác giả</option>
-                <option>Năm sáng tác</option>
-                <option>Phong cách</option>
-              </select>
-              <button 
-                onClick={async () => {
-                  if (!srForm.text || !srForm.answer) return;
-                  try {
-                    await addDoc(collection(db, 'speedrunQuestions'), srForm);
-                    setSrForm({ text: '', answer: '', category: 'Tác giả' });
-                    showToast('Đã thêm câu hỏi!', 'success');
-                  } catch (error) {
-                    handleFirestoreError(error, OperationType.CREATE, 'speedrunQuestions');
-                  }
-                }}
-                className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-bold"
-              >
-                Thêm
-              </button>
-            </div>
-          </div>
 
           <div className="bg-white rounded-3xl border border-stone-200 shadow-sm overflow-hidden">
             <table className="w-full text-left">
@@ -2491,18 +2798,35 @@ export default function App() {
                     <td className="px-6 py-4">{q.answer}</td>
                     <td className="px-6 py-4"><span className="px-2 py-1 bg-stone-100 rounded-lg text-[10px] font-bold uppercase">{q.category}</span></td>
                     <td className="px-6 py-4">
-                      <button 
-                        onClick={async () => {
-                          try {
-                            await deleteDoc(doc(db, 'speedrunQuestions', q.id));
-                          } catch (error) {
-                            handleFirestoreError(error, OperationType.DELETE, `speedrunQuestions/${q.id}`);
-                          }
-                        }} 
-                        className="text-red-500 hover:text-red-700"
-                      >
-                        Xoá
-                      </button>
+                      <div className="flex items-center gap-3">
+                        <button 
+                          onClick={() => {
+                            setSrForm({
+                              text: q.text,
+                              options: q.options,
+                              answer: q.answer,
+                              category: q.category
+                            });
+                            setEditingSrId(q.id);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="text-indigo-600 hover:text-indigo-800 font-bold"
+                        >
+                          Sửa
+                        </button>
+                        <button 
+                          onClick={async () => {
+                            try {
+                              await deleteDoc(doc(db, 'speedrunQuestions', q.id));
+                            } catch (error) {
+                              handleFirestoreError(error, OperationType.DELETE, `speedrunQuestions/${q.id}`);
+                            }
+                          }} 
+                          className="text-red-500 hover:text-red-700 font-bold"
+                        >
+                          Xoá
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -2522,6 +2846,51 @@ export default function App() {
       {role === 'student' && renderStudentView()}
 
       <AnimatePresence>
+        {showRegistrationModal && (
+          <div className="fixed inset-0 bg-brand-950/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl p-10 text-center"
+            >
+              <div className="w-20 h-20 bg-brand-100 rounded-3xl flex items-center justify-center mx-auto mb-8">
+                <UserPlus className="w-10 h-10 text-brand-600" />
+              </div>
+              <h2 className="text-3xl font-black text-brand-900 mb-2 tracking-tight">Chào mừng bạn!</h2>
+              <p className="text-brand-500 font-medium mb-8">Vui lòng hoàn tất thông tin để bắt đầu học tập.</p>
+              
+              <div className="space-y-6 text-left">
+                <div>
+                  <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Họ và tên</label>
+                  <input 
+                    type="text" 
+                    value={regData.displayName}
+                    onChange={e => setRegData({...regData, displayName: e.target.value})}
+                    className="w-full bg-brand-50 border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all"
+                    placeholder="Nhập tên của bạn..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Lớp</label>
+                  <input 
+                    type="text" 
+                    value={regData.studentClass}
+                    onChange={e => setRegData({...regData, studentClass: e.target.value})}
+                    className="w-full bg-brand-50 border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all"
+                    placeholder="VD: 12A1..."
+                  />
+                </div>
+                <button 
+                  onClick={handleCompleteRegistration}
+                  className="w-full py-5 dark-blue-gradient text-white rounded-2xl font-black text-lg shadow-xl shadow-brand-900/20 hover:scale-[1.02] transition-all"
+                >
+                  HOÀN TẤT ĐĂNG KÝ
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {toast && (
           <motion.div
             initial={{ opacity: 0, y: 50 }}

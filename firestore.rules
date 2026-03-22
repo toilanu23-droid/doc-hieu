@@ -7,7 +7,10 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() && 
-             request.auth.token.email == "toilanu23@gmail.com" && 
+             (request.auth.token.email == "toilanu23@gmail.com" || 
+              request.auth.token.email == "clone1svt@gmail.com" ||
+              (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && 
+               get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin')) && 
              request.auth.token.email_verified == true;
     }
 
