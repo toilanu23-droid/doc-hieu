@@ -815,9 +815,10 @@ export default function App() {
   };
 
   const handleAIChat = async () => {
-    if (!chatInput.trim() || !user) return;
+    const currentInput = chatInput.trim();
+    if (!currentInput || !user) return;
     
-    const userMsg: ChatMessage = { role: 'user', text: chatInput };
+    const userMsg: ChatMessage = { role: 'user', text: currentInput };
     const newMessages = [...chatMessages, userMsg];
     setChatMessages(newMessages);
     setChatInput('');
@@ -840,7 +841,7 @@ export default function App() {
         kb = activeAssignment.knowledgeBase || '';
       } else {
         // General chat mode
-        questionText = chatInput;
+        questionText = currentInput;
         // Combine KBs from all assignments and global KB for general context
         kb = [globalKnowledgeBase, ...assignments.map(a => a.knowledgeBase)].filter(Boolean).join('\n\n');
       }
@@ -949,21 +950,23 @@ export default function App() {
   };
 
   const handleSearchAgent = async () => {
-    if (!searchInput.trim()) return;
+    const currentQuery = searchInput.trim();
+    if (!currentQuery) return;
     
-    const userMsg: ChatMessage = { role: 'user', text: searchInput };
+    const userMsg: ChatMessage = { role: 'user', text: currentQuery };
     setSearchChatMessages(prev => [...prev, userMsg]);
     setSearchInput('');
     setIsSearchLoading(true);
 
     try {
       const aiResponse = await searchAgent(
-        searchInput,
+        currentQuery,
         searchChatMessages.map(m => ({ role: m.role === 'user' ? 'user' : 'model', text: m.text }))
       );
       setSearchChatMessages(prev => [...prev, { role: 'ai', text: aiResponse || 'Không tìm thấy thông tin.' }]);
     } catch (error) {
       console.error(error);
+      setSearchChatMessages(prev => [...prev, { role: 'ai', text: 'Đã xảy ra lỗi khi tìm kiếm thông tin. Vui lòng thử lại.' }]);
     } finally {
       setIsSearchLoading(false);
     }
