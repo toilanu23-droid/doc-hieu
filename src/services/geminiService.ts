@@ -1,8 +1,9 @@
 import { GoogleGenAI } from "@google/genai";
 
 // Support both process.env (for AI Studio) and import.meta.env (for Vite/Netlify)
-const API_KEY = (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '') || 
-                ((import.meta as any).env?.VITE_GEMINI_API_KEY as string) || '';
+const API_KEY = process.env.GEMINI_API_KEY || 
+                ((import.meta as any).env?.VITE_GEMINI_API_KEY as string) || 
+                ((import.meta as any).env?.GEMINI_API_KEY as string) || '';
 
 const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null;
 
@@ -15,7 +16,7 @@ export async function getAIHelp(
   chatHistory: { role: string, text: string }[]
 ) {
   if (!ai) {
-    return "Lỗi: API Key chưa được cấu hình. Vui lòng kiểm tra cài đặt môi trường.";
+    return "Lỗi: API Key chưa được cấu hình. Vui lòng thiết lập biến môi trường VITE_GEMINI_API_KEY hoặc GEMINI_API_KEY trong cài đặt dự án của bạn.";
   }
   const model = "gemini-3-flash-preview";
   
@@ -65,7 +66,7 @@ export async function getAIHelp(
 
 export async function generateAIContent(prompt: string, responseMimeType: string = 'text/plain') {
   if (!ai) {
-    return "Lỗi: API Key chưa được cấu hình. Vui lòng kiểm tra cài đặt môi trường.";
+    return "Lỗi: API Key chưa được cấu hình. Vui lòng thiết lập biến môi trường VITE_GEMINI_API_KEY hoặc GEMINI_API_KEY trong cài đặt dự án của bạn.";
   }
   const model = "gemini-3-flash-preview";
   
@@ -83,7 +84,7 @@ export async function generateAIContent(prompt: string, responseMimeType: string
 
 export async function searchAgent(query: string, chatHistory: { role: string, text: string }[]) {
   if (!ai) {
-    return "Lỗi: API Key chưa được cấu hình. Vui lòng kiểm tra cài đặt môi trường.";
+    return "Lỗi: API Key chưa được cấu hình. Vui lòng thiết lập biến môi trường VITE_GEMINI_API_KEY hoặc GEMINI_API_KEY trong cài đặt dự án của bạn.";
   }
   const model = "gemini-3-flash-preview";
   
@@ -112,4 +113,34 @@ export async function searchAgent(query: string, chatHistory: { role: string, te
   });
 
   return response.text;
+}
+
+export async function checkAnswerWithAI(question: string, studentAnswer: string, correctAnswer: string) {
+  if (!ai) return null;
+  const model = "gemini-3-flash-preview";
+  const prompt = `
+    Bạn là một giám khảo chấm thi môn Ngữ Văn.
+    Câu hỏi: ${question}
+    Đáp án đúng: ${correctAnswer}
+    Câu trả lời của học sinh: ${studentAnswer}
+    
+    Hãy xác định xem câu trả lời của học sinh có đúng ý với đáp án đúng hay không.
+    Lưu ý: Học sinh có thể viết thêm các từ như "Câu 1:", "Theo mình là", "Đáp án là"... hãy bỏ qua những phần đó và tập trung vào nội dung chính.
+    Nếu đúng hoặc gần đúng ý, hãy trả về "CORRECT".
+    Nếu sai, hãy trả về "INCORRECT".
+    Chỉ trả về duy nhất một từ "CORRECT" hoặc "INCORRECT".
+  `;
+  
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { temperature: 0.1 },
+    });
+    const result = response.text.trim().toUpperCase();
+    return result.includes('CORRECT') && !result.includes('INCORRECT');
+  } catch (error) {
+    console.error('AI Check Error:', error);
+    return null;
+  }
 }

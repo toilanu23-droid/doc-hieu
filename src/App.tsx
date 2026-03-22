@@ -61,7 +61,7 @@ import {
 } from 'firebase/firestore';
 import { signInWithPopup, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
-import { getAIHelp, searchAgent, generateAIContent } from './services/geminiService';
+import { getAIHelp, searchAgent, generateAIContent, checkAnswerWithAI } from './services/geminiService';
 import * as mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -282,8 +282,15 @@ export default function App() {
         setIsAdminLoggedIn(true);
         localStorage.setItem('admin_logged_in', 'true');
       }
-      if (studentClass && data.studentClass !== studentClass) {
-        await updateDoc(profileRef, { studentClass });
+      
+      // Update local studentClass state from profile
+      if (data.studentClass) {
+        setStudentClass(data.studentClass);
+        localStorage.setItem('student_class', data.studentClass);
+      } else {
+        // If profile exists but no class, show registration modal
+        setShowRegistrationModal(true);
+        setRegData({ displayName: data.displayName || u.displayName || '', studentClass: '' });
       }
     }
   };
@@ -509,7 +516,8 @@ export default function App() {
       return;
     }
     if (!studentClass) {
-      showToast('Vui lòng nhập lớp!', 'error');
+      setShowRegistrationModal(true);
+      setRegData({ displayName: profile?.displayName || user.displayName || '', studentClass: '' });
       return;
     }
     setActiveAssignment(assignment);
@@ -550,10 +558,33 @@ export default function App() {
     const endTime = Date.now();
     const completionTime = Math.round((endTime - quizStartTime) / 1000);
 
-    const results = activeAssignment.questions.map((q, idx) => {
-      const isCorrect = currentAnswers[idx].trim().toLowerCase() === q.answer.trim().toLowerCase();
-      return { questionIndex: idx, studentAnswer: currentAnswers[idx], isCorrect };
-    });
+    const extractAnswer = (text: string) => {
+      const regex = /(?:câu|câu hỏi)\s*\d+[:.-]?\s*(.*)/i;
+      const match = text.match(regex);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+      return text.trim();
+    };
+
+    const results = await Promise.all(activeAssignment.questions.map(async (q, idx) => {
+      const rawAnswer = currentAnswers[idx];
+      const studentAns = extractAnswer(rawAnswer);
+      const correctAns = q.answer.trim();
+      
+      // 1. Exact match (case insensitive)
+      let isCorrect = studentAns.toLowerCase() === correctAns.toLowerCase();
+      
+      // 2. If not correct and it's a short answer, try AI
+      if (!isCorrect && q.type === 'short-answer' && studentAns.length > 0) {
+        const aiResult = await checkAnswerWithAI(q.text, studentAns, correctAns);
+        if (aiResult !== null) {
+          isCorrect = aiResult;
+        }
+      }
+      
+      return { questionIndex: idx, studentAnswer: rawAnswer, isCorrect };
+    }));
 
     const correctCount = results.filter(r => r.isCorrect).length;
     const score = Math.round((correctCount / activeAssignment.questions.length) * 100);
@@ -1972,15 +2003,48 @@ export default function App() {
               </div>
 
               <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm flex flex-col gap-6">
-                <div className="w-full">
-                  <label className="block text-xs font-black text-slate-400 uppercase mb-2 tracking-widest">Lớp của bạn</label>
-                  <input 
-                    type="text" 
-                    value={studentClass}
-                    onChange={e => setStudentClass(e.target.value)}
-                    className="w-full px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold"
-                    placeholder="VD: 12A1..."
-                  />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
+                  <div>
+                    <label className="block text-xs font-black text-slate-400 uppercase mb-2 tracking-widest">Họ và tên</label>
+                    <div className="relative">
+                      <input 
+                        type="text" 
+                        value={profile?.displayName || ''}
+                        onChange={async (e) => {
+                          const newName = e.target.value;
+                          setProfile(prev => prev ? { ...prev, displayName: newName } : null);
+                          if (user) {
+                            const profileRef = doc(db, 'profiles', user.uid);
+                            await updateDoc(profileRef, { displayName: newName });
+                          }
+                        }}
+                        className="w-full px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold"
+                        placeholder="Nhập tên của bạn..."
+                      />
+                      <Save className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-black text-slate-400 uppercase mb-2 tracking-widest">Lớp của bạn</label>
+                    <div className="relative">
+                      <input 
+                        type="text" 
+                        value={studentClass}
+                        onChange={async (e) => {
+                          const newClass = e.target.value;
+                          setStudentClass(newClass);
+                          localStorage.setItem('student_class', newClass);
+                          if (user) {
+                            const profileRef = doc(db, 'profiles', user.uid);
+                            await updateDoc(profileRef, { studentClass: newClass });
+                          }
+                        }}
+                        className="w-full px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold"
+                        placeholder="VD: 12A1..."
+                      />
+                      <Save className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-300" />
+                    </div>
+                  </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full">
                   <div>
