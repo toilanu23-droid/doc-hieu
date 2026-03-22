@@ -568,8 +568,10 @@ export default function App() {
       return text.trim();
     };
 
-    const results = await Promise.all(activeAssignment.questions.map(async (q, idx) => {
-      const rawAnswer = currentAnswers[idx];
+    const results = [];
+    for (let idx = 0; idx < activeAssignment.questions.length; idx++) {
+      const q = activeAssignment.questions[idx];
+      const rawAnswer = currentAnswers[idx] || '';
       const studentAns = extractAnswer(rawAnswer);
       const correctAns = q.answer.trim();
       
@@ -577,15 +579,17 @@ export default function App() {
       let isCorrect = studentAns.toLowerCase() === correctAns.toLowerCase();
       
       // 2. If not correct and it's a short answer, try AI
-      if (!isCorrect && q.type === 'short-answer' && studentAns.length > 0) {
+      if (!isCorrect && q.type === 'short-answer' && studentAns.trim().length > 0) {
+        // Add a small delay between AI calls to avoid burst limits
+        if (idx > 0) await new Promise(resolve => setTimeout(resolve, 500));
         const aiResult = await checkAnswerWithAI(q.text, studentAns, correctAns);
         if (aiResult !== null) {
           isCorrect = aiResult;
         }
       }
       
-      return { questionIndex: idx, studentAnswer: rawAnswer, isCorrect };
-    }));
+      results.push({ questionIndex: idx, studentAnswer: rawAnswer, isCorrect });
+    }
 
     const correctCount = results.filter(r => r.isCorrect).length;
     const score = Math.round((correctCount / activeAssignment.questions.length) * 100);

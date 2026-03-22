@@ -49,6 +49,8 @@ async function callWithRetry(fn: (ai: any) => Promise<any>): Promise<any> {
         const rotated = await rotateKey();
         if (rotated) {
           attempts++;
+          // Add a small delay before trying the next key
+          await new Promise(resolve => setTimeout(resolve, 300));
           continue;
         }
       }
