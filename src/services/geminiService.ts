@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 // Support both process.env (for AI Studio) and import.meta.env (for Vite/Netlify)
 const API_KEY = process.env.GEMINI_API_KEY || 
@@ -119,23 +119,34 @@ export async function checkAnswerWithAI(question: string, studentAnswer: string,
   if (!ai) return null;
   const model = "gemini-3-flash-preview";
   const prompt = `
-    Bạn là một giám khảo chấm thi môn Ngữ Văn.
-    Câu hỏi: ${question}
-    Đáp án đúng: ${correctAnswer}
-    Câu trả lời của học sinh: ${studentAnswer}
+    Bạn là một giám khảo chấm thi môn Ngữ Văn cực kỳ công tâm và linh hoạt.
+    Nhiệm vụ: So sánh câu trả lời của học sinh với đáp án đúng để xác định xem học sinh có hiểu bài và trả lời đúng ý hay không.
     
-    Hãy xác định xem câu trả lời của học sinh có đúng ý với đáp án đúng hay không.
-    Lưu ý: Học sinh có thể viết thêm các từ như "Câu 1:", "Theo mình là", "Đáp án là"... hãy bỏ qua những phần đó và tập trung vào nội dung chính.
-    Nếu đúng hoặc gần đúng ý, hãy trả về "CORRECT".
-    Nếu sai, hãy trả về "INCORRECT".
-    Chỉ trả về duy nhất một từ "CORRECT" hoặc "INCORRECT".
+    Câu hỏi: "${question}"
+    Đáp án chuẩn: "${correctAnswer}"
+    Câu trả lời của học sinh: "${studentAnswer}"
+    
+    QUY TẮC CHẤM ĐIỂM:
+    1. Chấp nhận các biến thể về từ đồng nghĩa (ví dụ: "vui vẻ" tương đương với "hạnh phúc" trong ngữ cảnh phù hợp).
+    2. Chấp nhận các cách diễn đạt khác nhau nhưng cùng một ý nghĩa cốt lõi.
+    3. Bỏ qua các lỗi chính tả nhỏ, lỗi ngữ pháp hoặc cách trình bày (ví dụ: "Câu 1 là:", "Theo em...", viết hoa/viết thường).
+    4. Nếu câu trả lời của học sinh chứa ý chính của đáp án chuẩn, hãy coi là ĐÚNG.
+    5. Chỉ coi là SAI nếu học sinh trả lời lạc đề, sai kiến thức cơ bản hoặc không có ý nào trùng khớp với đáp án chuẩn.
+    
+    KẾT QUẢ TRẢ VỀ:
+    - Trả về "CORRECT" nếu đúng hoặc gần đúng ý.
+    - Trả về "INCORRECT" nếu sai hoàn toàn.
+    - CHỈ TRẢ VỀ DUY NHẤT MỘT TỪ: "CORRECT" HOẶC "INCORRECT".
   `;
   
   try {
     const response = await ai.models.generateContent({
       model,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: { temperature: 0.1 },
+      config: { 
+        temperature: 0.1,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
+      },
     });
     const result = response.text.trim().toUpperCase();
     return result.includes('CORRECT') && !result.includes('INCORRECT');

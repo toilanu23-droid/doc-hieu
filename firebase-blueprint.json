@@ -63,10 +63,12 @@
       "type": "object",
       "properties": {
         "text": { "type": "string" },
+        "type": { "type": "string", "enum": ["multiple-choice", "short-answer"] },
+        "options": { "type": "array", "items": { "type": "string" } },
         "answer": { "type": "string" },
         "category": { "type": "string", "enum": ["Tác giả", "Năm sáng tác", "Phong cách"] }
       },
-      "required": ["text", "answer", "category"]
+      "required": ["text", "type", "answer", "category"]
     }
   },
   "firestore": {

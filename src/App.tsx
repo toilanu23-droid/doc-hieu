@@ -185,6 +185,7 @@ interface UserProfile {
 interface SpeedrunQuestion {
   id: string;
   text: string;
+  type: 'multiple-choice' | 'short-answer';
   options: string[];
   answer: string;
   category: string;
@@ -658,12 +659,21 @@ export default function App() {
     setSpeedInput('');
   };
 
-  const handleSpeedSubmit = (e?: React.FormEvent, choice?: string) => {
+  const handleSpeedSubmit = async (e?: React.FormEvent, choice?: string) => {
     if (e) e.preventDefault();
     if (!currentSpeedQuestion) return;
 
     const studentAnswer = choice || speedInput;
-    if (studentAnswer.trim().toLowerCase() === currentSpeedQuestion.answer.toLowerCase()) {
+    let isCorrect = studentAnswer.trim().toLowerCase() === currentSpeedQuestion.answer.toLowerCase();
+
+    if (!isCorrect && currentSpeedQuestion.type === 'short-answer' && studentAnswer.trim().length > 0) {
+      const aiResult = await checkAnswerWithAI(currentSpeedQuestion.text, studentAnswer, currentSpeedQuestion.answer);
+      if (aiResult !== null) {
+        isCorrect = aiResult;
+      }
+    }
+
+    if (isCorrect) {
       setSpeedRunScore(prev => prev + 1);
       setSpeedRunTime(prev => prev + 15);
     }
@@ -729,6 +739,7 @@ export default function App() {
               try {
                 await addDoc(collection(db, 'speedrunQuestions'), {
                   text: questionText,
+                  type: 'multiple-choice',
                   options: options,
                   answer: 'A',
                   category: 'Tác giả'
@@ -746,6 +757,7 @@ export default function App() {
               try {
                 await addDoc(collection(db, 'speedrunQuestions'), {
                   text: parts[0].trim(),
+                  type: 'multiple-choice',
                   options: [parts[1].trim(), parts[2].trim(), parts[3].trim(), parts[4].trim()],
                   answer: parts[5].trim(),
                   category: parts[6]?.trim() || 'Tác giả'
@@ -848,8 +860,10 @@ export default function App() {
       // Save to Firestore
       const chatRef = doc(db, 'chats', user.uid);
       await setDoc(chatRef, { messages: finalMessages, updatedAt: serverTimestamp() });
-    } catch (err) {
+    } catch (err: any) {
       console.error('AI Error:', err);
+      const errorMsg = { role: 'ai' as const, text: `Lỗi: ${err.message || 'Không thể kết nối với AI. Vui lòng kiểm tra lại API Key hoặc kết nối mạng.'}` };
+      setChatMessages(prev => [...prev, errorMsg]);
     } finally {
       setIsAiLoading(false);
     }
@@ -2255,7 +2269,7 @@ export default function App() {
                   ))}
                 </div>
 
-                <button onClick={handleSubmitQuiz} className="w-full py-5 bg-emerald-600 text-white rounded-3xl font-bold text-lg hover:bg-emerald-700 transition-all">
+                <button onClick={handleSubmitQuiz} className="w-full py-5 bg-brand-600 text-white rounded-3xl font-bold text-lg hover:bg-brand-700 transition-all shadow-lg shadow-brand-500/20">
                   Nộp bài hoàn tất
                 </button>
               </div>
@@ -2528,7 +2542,7 @@ export default function App() {
                 className="bg-white w-full max-w-2xl h-[85vh] md:h-[600px] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden"
                 onClick={e => e.stopPropagation()}
               >
-                <div className="p-6 bg-emerald-600 text-white flex justify-between items-center">
+                <div className="p-6 bg-brand-600 text-white flex justify-between items-center">
                   <div className="flex items-center gap-3">
                     <BrainCircuit className="w-6 h-6" />
                     <h2 className="font-bold text-white">Trợ lý Học tập AI</h2>
@@ -2543,20 +2557,20 @@ export default function App() {
                   )}
                   {chatMessages.map((msg, idx) => (
                     <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[85%] p-5 rounded-3xl text-sm leading-relaxed ${msg.role === 'user' ? 'bg-emerald-600 text-white rounded-tr-none' : 'bg-blue-50 text-blue-700 rounded-tl-none border border-blue-100 shadow-sm'}`}>
+                      <div className={`max-w-[85%] p-5 rounded-3xl text-sm leading-relaxed ${msg.role === 'user' ? 'bg-brand-600 text-white rounded-tr-none shadow-md' : 'bg-brand-50 text-brand-900 rounded-tl-none border border-brand-100 shadow-sm'}`}>
                         <div className="markdown-body">
                           <Markdown>{msg.text}</Markdown>
                         </div>
                       </div>
                     </div>
                   ))}
-                  {isAiLoading && <div className="flex justify-start"><div className="bg-stone-100 p-4 rounded-2xl animate-pulse">AI đang suy nghĩ...</div></div>}
+                  {isAiLoading && <div className="flex justify-start"><div className="bg-stone-100 p-4 rounded-2xl animate-pulse text-stone-500 font-medium">AI đang suy nghĩ...</div></div>}
                 </div>
                 <div className="p-6 border-t border-stone-100">
                   <p className="text-[10px] text-stone-400 text-center mb-3 font-bold italic">Tài liệu chỉ mang tính chất tham khảo, cần chứng thực rõ ràng.</p>
                   <div className="relative">
-                    <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleAIChat()} placeholder="Hỏi AI về kiến thức văn học..." className="w-full pl-6 pr-16 py-4 bg-stone-50 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-500" />
-                    <button onClick={handleAIChat} className="absolute right-3 top-1/2 -translate-y-1/2 p-3 bg-emerald-600 text-white rounded-xl"><Send className="w-5 h-5" /></button>
+                    <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleAIChat()} placeholder="Hỏi AI về kiến thức văn học..." className="w-full pl-6 pr-16 py-4 bg-stone-50 rounded-2xl outline-none focus:ring-2 focus:ring-brand-500" />
+                    <button onClick={handleAIChat} className="absolute right-3 top-1/2 -translate-y-1/2 p-3 bg-brand-600 text-white rounded-xl hover:bg-brand-700 transition-colors"><Send className="w-5 h-5" /></button>
                   </div>
                 </div>
               </motion.div>
