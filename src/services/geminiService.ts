@@ -23,46 +23,85 @@ async function rotateKey() {
   return false;
 }
 
-async function callWithRetry(fn: (ai: any) => Promise<any>): Promise<any> {
+async function callWithRetry(fn: (ai: any, isOpenRouter: boolean, apiKey: string) => Promise<any>): Promise<any> {
   let attempts = 0;
-  const maxAttempts = Math.max(1, API_KEYS.length);
+  const maxAttempts = Math.max(1, API_KEYS.length * 2);
   const errors: string[] = [];
 
   while (attempts < maxAttempts) {
-    const ai = getAiInstance();
-    if (!ai) {
+    const key = API_KEYS[currentKeyIndex];
+    if (!key) {
       throw new Error("Lỗi: API Key chưa được cấu hình. Vui lòng thiết lập biến môi trường GEMINI_API_KEY.");
     }
 
+    const isOpenRouter = key.startsWith('sk-or-v1-');
+    const ai = !isOpenRouter ? new GoogleGenAI({ apiKey: key }) : null;
+
     try {
-      return await fn(ai);
+      return await fn(ai, isOpenRouter, key);
     } catch (error: any) {
-      const errorStr = JSON.stringify(error);
-      const isQuotaError = errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED');
-      const isInvalidKeyError = errorStr.includes('400') || errorStr.includes('API_KEY_INVALID') || errorStr.includes('not valid');
+      // Cải thiện việc bắt lỗi: Chuyển sang string để kiểm tra mã lỗi
+      const errorMessage = error?.message || String(error);
+      const errorStatus = error?.status || (error?.response?.status);
+      const errorStr = (errorMessage + " " + JSON.stringify(error)).toLowerCase();
+      
+      const isQuotaError = errorStatus === 429 || errorStr.includes('429') || errorStr.includes('quota') || errorStr.includes('exhausted');
+      const isInvalidKeyError = errorStatus === 401 || errorStatus === 400 || errorStr.includes('400') || errorStr.includes('401') || errorStr.includes('invalid') || errorStr.includes('not valid');
 
       if (isQuotaError || isInvalidKeyError) {
-        const errorType = isQuotaError ? "hết hạn mức (429)" : "không hợp lệ (400)";
+        const errorType = isQuotaError ? "hết hạn mức (429)" : "không hợp lệ (400/401)";
         console.warn(`API Key #${currentKeyIndex + 1} ${errorType}. Đang thử xoay vòng...`);
-        errors.push(`Key #${currentKeyIndex + 1}: ${errorType}`);
+        
+        const errorKey = `Key #${currentKeyIndex + 1}: ${errorType}`;
+        if (!errors.includes(errorKey)) {
+          errors.push(errorKey);
+        }
         
         const rotated = await rotateKey();
         if (rotated) {
           attempts++;
-          // Add a small delay before trying the next key
-          await new Promise(resolve => setTimeout(resolve, 300));
+          const delay = isQuotaError ? 2000 : 500;
+          await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
       }
       
-      // If it's another type of error or we can't rotate, throw it
       console.error('AI Service Error:', error);
       throw error;
     }
   }
   
   const errorSummary = errors.length > 0 ? `\nChi tiết:\n${errors.join('\n')}` : "";
-  throw new Error(`Tất cả API Keys đều gặp lỗi hoặc hết hạn mức.${errorSummary}\nVui lòng kiểm tra lại các API Key trong phần Settings.`);
+  throw new Error(`Tất cả API Keys đều gặp lỗi hoặc hết hạn mức.${errorSummary}\n\nLƯU Ý: Nếu bạn dùng OpenRouter, hãy đảm bảo Key có định dạng sk-or-v1-... và tài khoản có đủ số dư.`);
+}
+
+// Helper for OpenRouter fetch
+async function fetchOpenRouter(prompt: string, apiKey: string, systemInstruction?: string, responseMimeType?: string) {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": window.location.origin,
+      "X-Title": "Học Văn Gen Z",
+    },
+    body: JSON.stringify({
+      "model": "google/gemini-2.0-flash-001", // Hoặc mô hình khác bạn muốn dùng qua OpenRouter
+      "messages": [
+        ...(systemInstruction ? [{ "role": "system", "content": systemInstruction }] : []),
+        { "role": "user", "content": prompt }
+      ],
+      "response_format": responseMimeType === 'application/json' ? { "type": "json_object" } : undefined
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw errorData;
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
 }
 
 export async function getAIHelp(
@@ -73,9 +112,7 @@ export async function getAIHelp(
   knowledgeBase: string,
   chatHistory: { role: string, text: string }[]
 ) {
-  return callWithRetry(async (ai) => {
-    const model = "gemini-3-flash-preview";
-    
+  return callWithRetry(async (ai, isOpenRouter, apiKey) => {
     const systemInstruction = `
       Bạn là một trợ lý học tập cực kỳ "cool" và thông minh cho các bạn học sinh Gen Z. 
       Phong cách của bạn: Năng động, sử dụng ngôn ngữ trẻ trung nhưng vẫn chuyên nghiệp, có thể dùng một vài emoji phù hợp (như ✨, 🚀, 💡).
@@ -99,6 +136,13 @@ export async function getAIHelp(
       ĐÁP ÁN ĐÚNG (CHỈ DÙNG ĐỂ BẠN BIẾT ĐỂ HƯỚNG DẪN, KHÔNG TIẾT LỘ): ${correctAnswer}
     `;
 
+    if (isOpenRouter) {
+      const historyText = chatHistory.map(m => `${m.role === 'user' ? 'Học sinh' : 'AI'}: ${m.text}`).join('\n');
+      const prompt = `${historyText}\n\nHọc sinh: Hãy giúp mình hiểu tại sao mình sai hoặc gợi ý cách làm câu này.`;
+      return await fetchOpenRouter(prompt, apiKey, systemInstruction);
+    }
+
+    const model = "gemini-3-flash-preview";
     const contents = chatHistory.map(msg => ({
       role: msg.role === 'user' ? 'user' : 'model',
       parts: [{ text: msg.text }]
@@ -122,9 +166,12 @@ export async function getAIHelp(
 }
 
 export async function generateAIContent(prompt: string, responseMimeType: string = 'text/plain') {
-  return callWithRetry(async (ai) => {
+  return callWithRetry(async (ai, isOpenRouter, apiKey) => {
+    if (isOpenRouter) {
+      return await fetchOpenRouter(prompt, apiKey, undefined, responseMimeType);
+    }
+
     const model = "gemini-3-flash-preview";
-    
     const response = await ai.models.generateContent({
       model,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -139,15 +186,20 @@ export async function generateAIContent(prompt: string, responseMimeType: string
 }
 
 export async function searchAgent(query: string, chatHistory: { role: string, text: string }[]) {
-  return callWithRetry(async (ai) => {
-    const model = "gemini-3-flash-preview";
-    
+  return callWithRetry(async (ai, isOpenRouter, apiKey) => {
     const systemInstruction = `
       Bạn là một trợ lý thông tin thông minh. 
       Bạn có khả năng tìm kiếm thông tin thời gian thực qua Google Search để thảo luận về các sự kiện hiện tại, trích dẫn tin tức mới nhất hoặc kiểm chứng thông tin.
       Hãy trả lời bằng tiếng Việt, trích dẫn nguồn rõ ràng nếu có.
     `;
 
+    if (isOpenRouter) {
+      const historyText = chatHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`).join('\n');
+      const prompt = `${historyText}\n\nUser: ${query}`;
+      return await fetchOpenRouter(prompt, apiKey, systemInstruction);
+    }
+
+    const model = "gemini-3-flash-preview";
     const contents = chatHistory.map(msg => ({
       role: msg.role === 'user' ? 'user' : 'model',
       parts: [{ text: msg.text }]
@@ -172,8 +224,7 @@ export async function searchAgent(query: string, chatHistory: { role: string, te
 
 export async function checkAnswerWithAI(question: string, studentAnswer: string, correctAnswer: string) {
   try {
-    return await callWithRetry(async (ai) => {
-      const model = "gemini-3-flash-preview";
+    return await callWithRetry(async (ai, isOpenRouter, apiKey) => {
       const prompt = `
         Bạn là một giám khảo chấm thi môn Ngữ Văn cực kỳ công tâm và linh hoạt.
         Nhiệm vụ: So sánh câu trả lời của học sinh với đáp án đúng để xác định xem học sinh có hiểu bài và trả lời đúng ý hay không.
@@ -194,7 +245,14 @@ export async function checkAnswerWithAI(question: string, studentAnswer: string,
         - Trả về "INCORRECT" nếu sai hoàn toàn.
         - CHỈ TRẢ VỀ DUY NHẤT MỘT TỪ: "CORRECT" HOẶC "INCORRECT".
       `;
+
+      if (isOpenRouter) {
+        const result = await fetchOpenRouter(prompt, apiKey);
+        const upperResult = result.trim().toUpperCase();
+        return upperResult.includes('CORRECT') && !upperResult.includes('INCORRECT');
+      }
       
+      const model = "gemini-3-flash-preview";
       const response = await ai.models.generateContent({
         model,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],

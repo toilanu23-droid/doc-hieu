@@ -580,8 +580,10 @@ export default function App() {
       
       // 2. If not correct and it's a short answer, try AI
       if (!isCorrect && q.type === 'short-answer' && studentAns.trim().length > 0) {
-        // Add a small delay between AI calls to avoid burst limits
-        if (idx > 0) await new Promise(resolve => setTimeout(resolve, 500));
+        // Add a significant delay between AI calls to avoid rate limits (RPM)
+        // Free tier often allows ~15 RPM, which is 1 request every 4 seconds.
+        // We use 2.5 seconds as a compromise, assuming some keys might be rotated.
+        if (idx > 0) await new Promise(resolve => setTimeout(resolve, 2500));
         const aiResult = await checkAnswerWithAI(q.text, studentAns, correctAns);
         if (aiResult !== null) {
           isCorrect = aiResult;
