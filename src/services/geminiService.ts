@@ -77,16 +77,17 @@ async function callWithRetry(fn: (ai: any, isOpenRouter: boolean, apiKey: string
 
 // Helper for OpenRouter fetch
 async function fetchOpenRouter(prompt: string, apiKey: string, systemInstruction?: string, responseMimeType?: string) {
+  const cleanApiKey = apiKey.trim();
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
+      "Authorization": `Bearer ${cleanApiKey}`,
       "Content-Type": "application/json",
       "HTTP-Referer": window.location.origin,
-      "X-Title": "Học Văn Gen Z",
+      "X-Title": "Hoc Van Gen Z", // Removed Vietnamese characters to avoid ISO-8859-1 error
     },
     body: JSON.stringify({
-      "model": "google/gemini-2.0-flash-001", // Hoặc mô hình khác bạn muốn dùng qua OpenRouter
+      "model": "google/gemini-2.0-flash-001",
       "messages": [
         ...(systemInstruction ? [{ "role": "system", "content": systemInstruction }] : []),
         { "role": "user", "content": prompt }
