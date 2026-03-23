@@ -248,7 +248,10 @@ export default function App() {
   const [speedRunTime, setSpeedRunTime] = useState(60);
   const [speedRunScore, setSpeedRunScore] = useState(0);
   const [currentSpeedQuestion, setCurrentSpeedQuestion] = useState<SpeedrunQuestion | null>(null);
+  const [askedSpeedrunIds, setAskedSpeedrunIds] = useState<string[]>([]);
   const [speedInput, setSpeedInput] = useState('');
+  const [speedFeedback, setSpeedFeedback] = useState<'correct' | 'incorrect' | null>(null);
+  const [isProcessingSpeed, setIsProcessingSpeed] = useState(false);
 
   const [categoryFilter, setCategoryFilter] = useState('Tất cả');
   const [difficultyFilter, setDifficultyFilter] = useState('Tất cả');
@@ -656,21 +659,45 @@ export default function App() {
     setIsSpeedRunActive(true);
     setSpeedRunTime(60);
     setSpeedRunScore(0);
-    setNextSpeedQuestion();
+    setNextSpeedQuestion(true);
   };
 
-  const setNextSpeedQuestion = () => {
-    const randomIdx = Math.floor(Math.random() * speedrunQuestions.length);
-    setCurrentSpeedQuestion(speedrunQuestions[randomIdx]);
+  const setNextSpeedQuestion = (reset: boolean = false) => {
+    const currentAsked = reset ? [] : askedSpeedrunIds;
+    let available = speedrunQuestions.filter(q => !currentAsked.includes(q.id));
+    
+    if (available.length === 0) {
+      // If all questions have been asked, reset the list
+      available = speedrunQuestions;
+      const randomIdx = Math.floor(Math.random() * available.length);
+      const nextQ = available[randomIdx];
+      setCurrentSpeedQuestion(nextQ);
+      setAskedSpeedrunIds([nextQ.id]);
+    } else {
+      const randomIdx = Math.floor(Math.random() * available.length);
+      const nextQ = available[randomIdx];
+      setCurrentSpeedQuestion(nextQ);
+      setAskedSpeedrunIds(prev => reset ? [nextQ.id] : [...prev, nextQ.id]);
+    }
     setSpeedInput('');
   };
 
   const handleSpeedSubmit = async (e?: React.FormEvent, choice?: string) => {
     if (e) e.preventDefault();
-    if (!currentSpeedQuestion) return;
+    if (!currentSpeedQuestion || isProcessingSpeed) return;
 
+    setIsProcessingSpeed(true);
     const studentAnswer = choice || speedInput;
     let isCorrect = studentAnswer.trim().toLowerCase() === currentSpeedQuestion.answer.toLowerCase();
+
+    // Handle label-based vs text-based answers for multiple choice
+    if (!isCorrect && currentSpeedQuestion.type === 'multiple-choice' && choice && /^[A-D]$/.test(choice)) {
+      const idx = choice.charCodeAt(0) - 65;
+      const optionText = currentSpeedQuestion.options[idx];
+      if (optionText && optionText.trim().toLowerCase() === currentSpeedQuestion.answer.trim().toLowerCase()) {
+        isCorrect = true;
+      }
+    }
 
     if (!isCorrect && currentSpeedQuestion.type === 'short-answer' && studentAnswer.trim().length > 0) {
       const aiResult = await checkAnswerWithAI(currentSpeedQuestion.text, studentAnswer, currentSpeedQuestion.answer);
@@ -680,10 +707,33 @@ export default function App() {
     }
 
     if (isCorrect) {
+      // Play success sound
+      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3');
+      audio.play().catch(() => {});
+      
+      setSpeedFeedback('correct');
       setSpeedRunScore(prev => prev + 1);
       setSpeedRunTime(prev => prev + 15);
+      
+      setTimeout(() => {
+        setSpeedFeedback(null);
+        setNextSpeedQuestion();
+        setIsProcessingSpeed(false);
+      }, 600);
+    } else {
+      // Play error sound
+      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2003/2003-preview.mp3');
+      audio.play().catch(() => {});
+      
+      setSpeedFeedback('incorrect');
+      setSpeedRunTime(prev => Math.max(0, prev - 5));
+      setSpeedInput('');
+      
+      setTimeout(() => {
+        setSpeedFeedback(null);
+        setIsProcessingSpeed(false);
+      }, 600);
     }
-    setNextSpeedQuestion();
   };
 
   const handleEndSpeedRun = async () => {
@@ -691,8 +741,23 @@ export default function App() {
     if (user && speedRunScore > 0) {
       const pointsEarned = speedRunScore * 5;
       const profileRef = doc(db, 'profiles', user.uid);
+      
+      const currentPoints = profile?.points || 0;
+      const newPoints = currentPoints + pointsEarned;
+      let newRank: 'Đồng' | 'Bạc' | 'Vàng' = 'Đồng';
+      if (newPoints >= 1500) newRank = 'Vàng';
+      else if (newPoints >= 500) newRank = 'Bạc';
+
+      if (newRank !== profile?.rank && profile) {
+        showToast(`Chúc mừng! Bạn đã thăng hạng lên ${newRank}! 🏆`, 'success');
+      }
+
       try {
-        await updateDoc(profileRef, { points: increment(pointsEarned) });
+        await updateDoc(profileRef, { 
+          points: increment(pointsEarned),
+          rank: newRank
+        });
+        setProfile(prev => prev ? { ...prev, points: prev.points + pointsEarned, rank: newRank } : null);
         await updateStreak();
         showToast(`Hết giờ! Bạn đạt ${speedRunScore} câu đúng, nhận được ${pointsEarned} điểm!`, 'info');
       } catch (error) {
@@ -733,6 +798,67 @@ export default function App() {
         setNewAssignment(prev => ({ ...prev, questions: updatedQuestions }));
         showToast(`Đã cập nhật ${answerBlocks.length} đáp án!`, 'success');
       } else if (type === 'speedrun') {
+        showToast('Đang dùng AI để phân tích và tạo câu hỏi Speed Run...', 'info');
+        try {
+          const prompt = `
+            Dưới đây là nội dung một tài liệu văn học. Hãy trích xuất hoặc tạo ra các câu hỏi trắc nghiệm Speed Run từ nội dung này.
+            Mỗi câu hỏi phải có:
+            - text: Nội dung câu hỏi.
+            - type: Luôn là "multiple-choice".
+            - options: Một mảng gồm đúng 4 lựa chọn.
+            - answer: Đáp án đúng (phải là một trong 4 lựa chọn trong mảng options).
+            - category: Phân loại câu hỏi (ví dụ: "Tác giả", "Tác phẩm", "Nội dung", "Nghệ thuật", "Hoàn cảnh sáng tác").
+            
+            Yêu cầu:
+            - Trả về kết quả dưới dạng một mảng JSON các đối tượng.
+            - Cố gắng tạo ra ít nhất 5-10 câu hỏi nếu nội dung đủ dài.
+            - Đảm bảo các câu hỏi ngắn gọn, súc tích, phù hợp cho trò chơi Speed Run (trả lời nhanh).
+            - Trả về DUY NHẤT mảng JSON, không kèm theo văn bản giải thích nào khác.
+            
+            NỘI DUNG TÀI LIỆU:
+            ${text.substring(0, 15000)}
+          `;
+          
+          const aiResponse = await generateAIContent(prompt, 'application/json');
+          let questions: any[] = [];
+          try {
+            questions = JSON.parse(aiResponse);
+          } catch (e) {
+            // Try to extract JSON if there's markdown
+            const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
+            if (jsonMatch) {
+              questions = JSON.parse(jsonMatch[0]);
+            } else {
+              throw new Error('Không thể phân tích JSON từ AI');
+            }
+          }
+          
+          if (Array.isArray(questions) && questions.length > 0) {
+            let count = 0;
+            for (const q of questions) {
+              if (q.text && Array.isArray(q.options) && q.options.length >= 2) {
+                const finalOptions = [...q.options];
+                while (finalOptions.length < 4) finalOptions.push('');
+                
+                await addDoc(collection(db, 'speedrunQuestions'), {
+                  text: q.text,
+                  type: 'multiple-choice',
+                  options: finalOptions.slice(0, 4),
+                  answer: q.answer || finalOptions[0],
+                  category: q.category || 'Tác giả'
+                });
+                count++;
+              }
+            }
+            showToast(`Đã tự động tạo và tải lên ${count} câu hỏi Speed Run!`, 'success');
+            return;
+          }
+        } catch (error) {
+          console.error('AI Speedrun Error:', error);
+          showToast('AI gặp lỗi, đang chuyển sang bộ lọc thủ công...', 'info');
+        }
+
+        // Fallback to manual parsing
         const questionBlocks = text.split(/Câu\s*\d+[\.\:\)]/i).filter(b => b.trim().length > 0);
         if (questionBlocks.length > 0) {
           for (const block of questionBlocks) {
@@ -2458,17 +2584,17 @@ export default function App() {
               <motion.div 
                 initial={{ scale: 0.9, opacity: 0 }} 
                 animate={{ scale: 1, opacity: 1 }} 
-                className="bg-white w-full max-w-xl rounded-[2.5rem] shadow-2xl overflow-hidden"
+                className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden max-h-[90vh] flex flex-col"
                 onClick={e => e.stopPropagation()}
               >
-                <div className="p-8 bg-indigo-600 text-white flex justify-between items-center">
+                <div className="p-6 bg-indigo-600 text-white flex justify-between items-center shrink-0">
                   <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center font-black text-xl">
+                    <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center font-black text-lg">
                       {speedRunTime}s
                     </div>
                     <div>
-                      <h2 className="text-2xl font-bold">Speed Run</h2>
-                      <p className="text-indigo-100 text-sm">Điểm hiện tại: {speedRunScore}</p>
+                      <h2 className="text-xl font-bold">Speed Run</h2>
+                      <p className="text-indigo-100 text-xs">Điểm: {speedRunScore}</p>
                     </div>
                   </div>
                   <button onClick={handleEndSpeedRun} className="p-2 hover:bg-white/10 rounded-full"><XCircle className="w-6 h-6" /></button>
@@ -2484,32 +2610,60 @@ export default function App() {
                   />
                 </div>
 
-                <div className="p-10">
+                <div className="p-6 md:p-8 relative overflow-y-auto flex-1 custom-scrollbar">
+                  {/* Feedback Overlay */}
+                  <AnimatePresence>
+                    {speedFeedback && (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className={`absolute inset-0 z-10 flex items-center justify-center pointer-events-none ${
+                          speedFeedback === 'correct' ? 'bg-emerald-500/20' : 'bg-rose-500/20'
+                        }`}
+                      >
+                        <motion.div
+                          initial={{ scale: 0.5, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          className={`w-20 h-20 rounded-full flex items-center justify-center text-white shadow-2xl ${
+                            speedFeedback === 'correct' ? 'bg-emerald-500' : 'bg-rose-500'
+                          }`}
+                        >
+                          {speedFeedback === 'correct' ? (
+                            <CheckCircle2 className="w-10 h-10" />
+                          ) : (
+                            <XCircle className="w-10 h-10" />
+                          )}
+                        </motion.div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
                   {currentSpeedQuestion ? (
-                    <div className="space-y-8">
+                    <div className="space-y-6">
                       <div className="text-center">
-                        <span className="px-3 py-1 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded-lg uppercase mb-4 inline-block">
+                        <span className="px-3 py-1 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded-lg uppercase mb-3 inline-block">
                           {currentSpeedQuestion.category}
                         </span>
-                        <h3 className="text-3xl font-black text-stone-900 leading-tight">
+                        <h3 className="text-xl md:text-2xl font-black text-stone-900 leading-tight">
                           {currentSpeedQuestion.text}
                         </h3>
                       </div>
 
                       {currentSpeedQuestion.options && currentSpeedQuestion.options.some(opt => opt.trim() !== '') ? (
-                        <div className="grid grid-cols-1 gap-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           {currentSpeedQuestion.options.map((opt, idx) => {
                             const label = String.fromCharCode(65 + idx);
                             return (
                               <button
                                 key={idx}
                                 onClick={() => handleSpeedSubmit(undefined, label)}
-                                className="w-full p-5 rounded-2xl border-2 border-stone-100 hover:border-indigo-500 hover:bg-indigo-50 text-left transition-all flex items-center gap-4 group"
+                                className="w-full p-4 rounded-2xl border-2 border-stone-100 hover:border-indigo-500 hover:bg-indigo-50 text-left transition-all flex items-center gap-3 group"
                               >
-                                <span className="w-10 h-10 rounded-xl bg-stone-100 group-hover:bg-indigo-600 group-hover:text-white flex items-center justify-center font-black transition-colors">
+                                <span className="w-8 h-8 shrink-0 rounded-lg bg-stone-100 group-hover:bg-indigo-600 group-hover:text-white flex items-center justify-center font-black text-sm transition-colors">
                                   {label}
                                 </span>
-                                <span className="font-bold text-lg text-stone-700">{opt}</span>
+                                <span className="font-bold text-stone-700 leading-tight">{opt}</span>
                               </button>
                             );
                           })}
