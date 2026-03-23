@@ -10,8 +10,7 @@ service cloud.firestore {
              (request.auth.token.email == "toilanu23@gmail.com" || 
               request.auth.token.email == "clone1svt@gmail.com" ||
               (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && 
-               get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin')) && 
-             request.auth.token.email_verified == true;
+               get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin'));
     }
 
     function isValidAssignment(data) {
@@ -54,6 +53,14 @@ service cloud.firestore {
     match /config/{docId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
+    }
+
+    match /chats/{userId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    match /test/connection {
+      allow read: if true;
     }
   }
 }

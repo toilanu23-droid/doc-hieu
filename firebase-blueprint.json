@@ -96,6 +96,25 @@
         }
       },
       "description": "Global configuration settings"
+    },
+    "chats": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "messages": { "type": "array", "items": { "type": "object" } },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "description": "User chat history"
+    },
+    "test": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "connection": { "type": "string" }
+        }
+      },
+      "description": "Connection test collection"
     }
   }
 }
