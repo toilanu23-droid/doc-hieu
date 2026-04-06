@@ -62,5 +62,10 @@ service cloud.firestore {
     match /test/connection {
       allow read: if true;
     }
+
+    match /search_history/{historyId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+    }
   }
 }

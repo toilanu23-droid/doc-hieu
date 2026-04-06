@@ -6,6 +6,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Markdown from 'react-markdown';
 import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  Cell
+} from 'recharts';
+import { 
   BookOpen, 
   GraduationCap, 
   LayoutDashboard, 
@@ -32,6 +42,7 @@ import {
   User,
   ShieldCheck,
   Trash2,
+  Edit3,
   Eye,
   EyeOff,
   Save,
@@ -57,7 +68,8 @@ import {
   getDoc,
   setDoc,
   increment,
-  getDocFromServer
+  getDocFromServer,
+  limit
 } from 'firebase/firestore';
 import { signInWithPopup, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
@@ -160,7 +172,13 @@ interface Submission {
   assignmentTitle: string;
   score: number;
   completionTime: number; // in seconds
-  answers: { questionIndex: number; studentAnswer: string; isCorrect: boolean }[];
+  answers: { 
+    questionIndex: number; 
+    studentAnswer: string; 
+    isCorrect: boolean;
+    questionText: string;
+    correctAnswer: string;
+  }[];
   timestamp: any;
   attemptCount: number;
 }
@@ -180,6 +198,8 @@ interface UserProfile {
   studentClass?: string;
   role?: 'admin' | 'student';
   lastActive: any;
+  photoURL?: string;
+  level?: number;
 }
 
 interface SpeedrunQuestion {
@@ -196,7 +216,7 @@ interface SpeedrunQuestion {
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [adminActiveTab, setAdminActiveTab] = useState<'overview' | 'assignments' | 'results' | 'ai_teaching'>('overview');
+  const [adminActiveTab, setAdminActiveTab] = useState<'overview' | 'assignments' | 'results' | 'ai_teaching' | 'users'>('overview');
   const [globalKnowledgeBase, setGlobalKnowledgeBase] = useState('');
   const [role, setRole] = useState<'home' | 'admin' | 'student' | 'speedrun'>(() => {
     return (localStorage.getItem('app_role') as any) || 'home';
@@ -253,7 +273,13 @@ export default function App() {
   const [speedFeedback, setSpeedFeedback] = useState<'correct' | 'incorrect' | null>(null);
   const [isProcessingSpeed, setIsProcessingSpeed] = useState(false);
 
+  const [categories, setCategories] = useState<string[]>(['Truyện', 'Thơ', 'Văn bản thông tin', 'Văn bản nghị luận']);
+  const [newCategory, setNewCategory] = useState('');
+  const [showAddCategory, setShowAddCategory] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState('Tất cả');
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => localStorage.getItem('admin_notifications') !== 'false');
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [difficultyFilter, setDifficultyFilter] = useState('Tất cả');
   const [leaderboardAssignmentId, setLeaderboardAssignmentId] = useState<string | null>(null);
   const [adminClassFilter, setAdminClassFilter] = useState('Tất cả');
@@ -358,6 +384,13 @@ export default function App() {
       setAllProfiles(snap.docs.map(d => ({ userId: d.id, ...d.data() } as UserProfile)));
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'profiles'));
 
+    const qCategories = doc(db, 'config', 'categories');
+    const unsubCategories = onSnapshot(qCategories, (snap) => {
+      if (snap.exists()) {
+        setCategories(snap.data().list || ['Truyện', 'Thơ', 'Văn bản thông tin', 'Văn bản nghị luận']);
+      }
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'config/categories'));
+
     const qSpeedrun = query(collection(db, 'speedrunQuestions'));
     const unsubSpeedrun = onSnapshot(qSpeedrun, (snap) => {
       setSpeedrunQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as SpeedrunQuestion)));
@@ -366,16 +399,38 @@ export default function App() {
     return () => {
       unsubAssignments();
       unsubProfiles();
+      unsubCategories();
       unsubSpeedrun();
     };
   }, []);
 
   useEffect(() => {
-    if (!user) {
-      setSubmissions([]);
-      return;
+    if (isAdminLoggedIn && notificationsEnabled) {
+      const q = query(collection(db, 'submissions'), orderBy('timestamp', 'desc'), limit(1));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        if (!snap.empty) {
+          const latest = snap.docs[0].data() as Submission;
+          const lastNotifiedId = localStorage.getItem('last_notified_submission');
+          
+          if (latest.id !== lastNotifiedId && latest.timestamp) {
+            // Only notify if it's a new submission (timestamp is recent)
+            const now = new Date().getTime();
+            const subTime = latest.timestamp.toMillis();
+            if (now - subTime < 30000) { // within 30 seconds
+              showToast(`Học sinh ${latest.studentName} vừa nộp bài ${latest.assignmentTitle}!`, 'info');
+              if (audioRef.current) {
+                audioRef.current.play().catch(e => console.log('Audio play blocked', e));
+              }
+              localStorage.setItem('last_notified_submission', latest.id);
+            }
+          }
+        }
+      });
+      return () => unsubscribe();
     }
+  }, [isAdminLoggedIn, notificationsEnabled]);
 
+  useEffect(() => {
     const qSubmissions = query(collection(db, 'submissions'), orderBy('timestamp', 'desc'));
     const unsubSubmissions = onSnapshot(qSubmissions, (snap) => {
       setSubmissions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Submission)));
@@ -402,6 +457,134 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isSpeedRunActive, speedRunTime]);
 
+  const [searchAnalysis, setSearchAnalysis] = useState<string | null>(null);
+  const [searchChartData, setSearchChartData] = useState<{ name: string; count: number }[]>([]);
+  const [isAnalyzingSearch, setIsAnalyzingSearch] = useState(false);
+
+  const handleAnalyzeSearchHistory = async () => {
+    setIsAnalyzingSearch(true);
+    try {
+      const q = query(collection(db, 'search_history'), orderBy('timestamp', 'desc'), limit(100));
+      const snap = await getDocs(q);
+      const history = snap.docs.map(d => d.data().query).join(', ');
+      
+      if (!history) {
+        showToast('Chưa có dữ liệu tìm kiếm để phân tích!', 'info');
+        setIsAnalyzingSearch(false);
+        return;
+      }
+
+      const prompt = `Dưới đây là danh sách các từ khóa tìm kiếm của học sinh: ${history}. 
+      Hãy thực hiện 2 nhiệm vụ:
+      1. Tổng hợp các chủ đề chính mà học sinh đang quan tâm dưới dạng Markdown với các đề mục rõ ràng và một đoạn tóm tắt ngắn gọn.
+      2. Thống kê số lượng tìm kiếm cho 5-7 chủ đề phổ biến nhất để vẽ biểu đồ.
+      
+      Trả về kết quả dưới dạng JSON với cấu trúc:
+      {
+        "analysis": "nội dung markdown ở đây",
+        "chartData": [
+          {"name": "Chủ đề A", "count": 10},
+          {"name": "Chủ đề B", "count": 7},
+          ...
+        ]
+      }`;
+      
+      const response = await generateAIContent(prompt, 'application/json');
+      const data = JSON.parse(response);
+      setSearchAnalysis(data.analysis);
+      setSearchChartData(data.chartData || []);
+      showToast('Phân tích hoàn tất!', 'success');
+    } catch (error) {
+      console.error('Search Analysis Error:', error);
+      showToast('Lỗi khi phân tích lịch sử tìm kiếm.', 'error');
+    } finally {
+      setIsAnalyzingSearch(false);
+    }
+  };
+  useEffect(() => {
+    if (role === 'student' && user) {
+      setShowAIChat(true);
+      setShowSearchAgent(true);
+    }
+  }, [role, user]);
+
+  const handleProfilePictureUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+
+    if (file.size > 500000) { // 500KB limit for base64
+      showToast('Ảnh quá lớn! Vui lòng chọn ảnh dưới 500KB.', 'error');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64String = reader.result as string;
+      try {
+        await updateDoc(doc(db, 'profiles', user.uid), { photoURL: base64String });
+        setProfile(prev => prev ? { ...prev, photoURL: base64String } : null);
+        showToast('Cập nhật ảnh đại diện thành công!', 'success');
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `profiles/${user.uid}`);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+  const handleAddCategory = async () => {
+    if (!newCategory.trim()) return;
+    const updatedCategories = [...categories, newCategory.trim()];
+    try {
+      await setDoc(doc(db, 'config', 'categories'), { list: updatedCategories });
+      setNewCategory('');
+      setShowAddCategory(false);
+      showToast('Đã thêm thể loại mới!', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'config/categories');
+    }
+  };
+
+  const handleDeleteCategory = async (catToDelete: string) => {
+    const updatedCategories = categories.filter(c => c !== catToDelete);
+    try {
+      await setDoc(doc(db, 'config', 'categories'), { list: updatedCategories });
+      showToast('Đã xóa thể loại!', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'config/categories');
+    }
+  };
+
+  const handleAddShortAnswerQuestion = () => {
+    const newQ: Question = { text: '', type: 'short-answer', options: [], answer: '' };
+    setNewAssignment(prev => ({
+      ...prev,
+      questions: [...(prev.questions || []), newQ]
+    }));
+  };
+
+  const handleDeleteQuestion = (index: number) => {
+    setNewAssignment(prev => ({
+      ...prev,
+      questions: (prev.questions || []).filter((_, i) => i !== index)
+    }));
+  };
+
+  const handleQuestionChange = (index: number, field: keyof Question, value: any) => {
+    setNewAssignment(prev => {
+      const qs = [...(prev.questions || [])];
+      qs[index] = { ...qs[index], [field]: value };
+      return { ...prev, questions: qs };
+    });
+  };
+
+  const handleOptionChange = (qIndex: number, oIndex: number, value: string) => {
+    setNewAssignment(prev => {
+      const qs = [...(prev.questions || [])];
+      const opts = [...qs[qIndex].options];
+      opts[oIndex] = value;
+      qs[qIndex] = { ...qs[qIndex], options: opts };
+      return { ...prev, questions: qs };
+    });
+  };
   const handleGoogleLogin = async (targetRole: 'student' | 'admin') => {
     try {
       await signInWithPopup(auth, googleProvider);
@@ -593,7 +776,13 @@ export default function App() {
         }
       }
       
-      results.push({ questionIndex: idx, studentAnswer: rawAnswer, isCorrect });
+      results.push({ 
+        questionIndex: idx, 
+        studentAnswer: rawAnswer, 
+        isCorrect,
+        questionText: q.text,
+        correctAnswer: q.answer
+      });
     }
 
     const correctCount = results.filter(r => r.isCorrect).length;
@@ -1091,6 +1280,16 @@ export default function App() {
     setIsSearchLoading(true);
 
     try {
+      // Log search history
+      if (user) {
+        await addDoc(collection(db, 'search_history'), {
+          userId: user.uid,
+          userName: profile?.displayName || 'Unknown',
+          query: currentQuery,
+          timestamp: serverTimestamp()
+        });
+      }
+
       const aiResponse = await searchAgent(
         currentQuery,
         searchChatMessages.map(m => ({ role: m.role === 'user' ? 'user' : 'model', text: m.text }))
@@ -1286,6 +1485,7 @@ export default function App() {
             { id: 'overview', label: 'Tổng quan', icon: LayoutDashboard },
             { id: 'assignments', label: 'Bài tập', icon: PlusCircle },
             { id: 'results', label: 'Kết quả', icon: BarChart3 },
+            { id: 'users', label: 'Người dùng', icon: Users },
             { id: 'ai_teaching', label: 'Dạy AI', icon: BrainCircuit },
           ].map((item) => (
             <motion.button 
@@ -1337,7 +1537,8 @@ export default function App() {
               <h1 className="text-4xl font-black text-brand-900 tracking-tight">
                 {adminActiveTab === 'overview' ? 'Hệ thống' : 
                  adminActiveTab === 'assignments' ? 'Quản lý Bài tập' : 
-                 adminActiveTab === 'results' ? 'Kết quả Học sinh' : 'Huấn luyện AI'}
+                 adminActiveTab === 'results' ? 'Kết quả Học sinh' : 
+                 adminActiveTab === 'users' ? 'Quản lý Người dùng' : 'Huấn luyện AI'}
               </h1>
               <p className="text-brand-500 font-medium mt-1">Chào mừng trở lại, {user?.displayName} ✨</p>
             </div>
@@ -1387,46 +1588,158 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                <div className="lg:col-span-2 glass-card p-8">
-                  <div className="flex items-center justify-between mb-8">
-                    <h3 className="text-2xl font-black text-brand-900 tracking-tight">Hoạt động gần đây</h3>
-                    <button className="text-brand-600 font-bold text-sm hover:underline">Xem tất cả</button>
-                  </div>
-                  <div className="space-y-4">
-                    {submissions.slice(0, 5).map((s, i) => (
-                      <div key={s.id} className="flex items-center justify-between p-4 rounded-2xl bg-brand-50/50 border border-brand-100/50 hover:bg-brand-100/50 transition-colors">
-                        <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center font-bold text-brand-600 shadow-sm border border-brand-100">
-                            {s.studentName[0]}
+                <div className="lg:col-span-2 space-y-8">
+                  <div className="glass-card p-8">
+                    <div className="flex items-center justify-between mb-8">
+                      <h3 className="text-2xl font-black text-brand-900 tracking-tight">Hoạt động gần đây</h3>
+                      <button className="text-brand-600 font-bold text-sm hover:underline">Xem tất cả</button>
+                    </div>
+                    <div className="space-y-4">
+                      {submissions.slice(0, 5).map((s, i) => (
+                        <div key={s.id} className="flex items-center justify-between p-4 rounded-2xl bg-brand-50/50 border border-brand-100/50 hover:bg-brand-100/50 transition-colors">
+                          <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center font-bold text-brand-600 shadow-sm border border-brand-100">
+                              {s.studentName[0]}
+                            </div>
+                            <div>
+                              <div className="font-bold text-brand-900">{s.studentName}</div>
+                              <div className="text-xs text-brand-400 font-medium">Vừa nộp bài: <span className="text-brand-600 font-bold">{s.assignmentTitle}</span></div>
+                            </div>
                           </div>
-                          <div>
-                            <div className="font-bold text-brand-900">{s.studentName}</div>
-                            <div className="text-xs text-brand-400 font-medium">Vừa nộp bài: <span className="text-brand-600 font-bold">{s.assignmentTitle}</span></div>
+                          <div className="text-right">
+                            <div className={`text-lg font-black ${s.score >= 80 ? 'text-emerald-500' : s.score >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
+                              {s.score}%
+                            </div>
+                            <div className="text-[10px] text-brand-400 font-bold uppercase tracking-widest">
+                              {s.timestamp?.toDate?.().toLocaleDateString() || 'Vừa xong'}
+                            </div>
                           </div>
                         </div>
-                        <div className="text-right">
-                          <div className={`text-lg font-black ${s.score >= 80 ? 'text-emerald-500' : s.score >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
-                            {s.score}%
-                          </div>
-                          <div className="text-[10px] text-brand-400 font-bold uppercase tracking-widest">
-                            {s.timestamp?.toDate?.().toLocaleDateString() || 'Vừa xong'}
-                          </div>
+                      ))}
+                      {submissions.length === 0 && (
+                        <div className="text-center py-12 text-brand-400 font-medium italic">
+                          Chưa có lượt nộp bài nào.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* AI Search Analysis Section */}
+                  <div className="glass-card p-8">
+                    <div className="flex items-center justify-between mb-8">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-brand-600 rounded-2xl flex items-center justify-center shadow-lg shadow-brand-500/20">
+                          <BrainCircuit className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                          <h3 className="text-2xl font-black text-brand-900 tracking-tight">AI Phân Tích Xu Hướng</h3>
+                          <p className="text-brand-400 font-bold text-[10px] uppercase tracking-widest">Tổng hợp lịch sử tìm kiếm của học sinh</p>
                         </div>
                       </div>
-                    ))}
-                    {submissions.length === 0 && (
-                      <div className="text-center py-12 text-brand-400 font-medium italic">
-                        Chưa có lượt nộp bài nào.
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={handleAnalyzeSearchHistory}
+                        disabled={isAnalyzingSearch}
+                        className={`px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest flex items-center gap-2 transition-all ${
+                          isAnalyzingSearch 
+                          ? 'bg-brand-100 text-brand-400 cursor-not-allowed' 
+                          : 'bg-brand-900 text-white shadow-lg shadow-brand-900/20 hover:shadow-brand-900/40'
+                        }`}
+                      >
+                        {isAnalyzingSearch ? (
+                          <div className="w-4 h-4 border-2 border-brand-400 border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Sparkles className="w-4 h-4" />
+                        )}
+                        {isAnalyzingSearch ? 'ĐANG PHÂN TÍCH...' : 'PHÂN TÍCH NGAY'}
+                      </motion.button>
+                    </div>
+
+                    {searchAnalysis ? (
+                      <div className="space-y-8">
+                        <div className="bg-brand-50/50 p-6 rounded-3xl border border-brand-100">
+                          <div className="prose prose-brand max-w-none">
+                            <div className="text-brand-900 font-medium leading-relaxed whitespace-pre-wrap">
+                              {searchAnalysis}
+                            </div>
+                          </div>
+                        </div>
+
+                        {searchChartData.length > 0 && (
+                          <div className="h-[300px] w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={searchChartData}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                <XAxis 
+                                  dataKey="topic" 
+                                  axisLine={false}
+                                  tickLine={false}
+                                  tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }}
+                                />
+                                <YAxis 
+                                  axisLine={false}
+                                  tickLine={false}
+                                  tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }}
+                                />
+                                <Tooltip 
+                                  contentStyle={{ 
+                                    backgroundColor: '#fff', 
+                                    borderRadius: '16px', 
+                                    border: 'none', 
+                                    boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' 
+                                  }}
+                                />
+                                <Bar 
+                                  dataKey="count" 
+                                  fill="#4f46e5" 
+                                  radius={[8, 8, 0, 0]} 
+                                  name="Số lượt tìm kiếm"
+                                />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center py-12 bg-brand-50/30 rounded-3xl border-2 border-dashed border-brand-100">
+                        <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-sm">
+                          <Search className="w-8 h-8 text-brand-200" />
+                        </div>
+                        <p className="text-brand-400 font-bold text-sm">Nhấn nút phân tích để xem xu hướng tìm kiếm của học sinh</p>
                       </div>
                     )}
                   </div>
                 </div>
 
-                <div className="glass-card p-8">
+                <div className="glass-card p-8 h-fit">
                   <div className="flex items-center justify-between mb-8">
-                    <h3 className="text-2xl font-black text-brand-900 tracking-tight">Lớp học</h3>
+                    <h3 className="text-2xl font-black text-brand-900 tracking-tight">Cài đặt</h3>
                   </div>
                   <div className="space-y-4">
+                    <div className="flex items-center justify-between p-6 bg-brand-50 rounded-3xl border border-brand-100">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center">
+                          <Flame className="w-5 h-5 text-brand-600" />
+                        </div>
+                        <div>
+                          <div className="font-black text-brand-900 text-sm">Thông báo nộp bài</div>
+                          <div className="text-[10px] text-brand-500 font-medium">Nhận thông báo khi có học sinh nộp bài</div>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          const newVal = !notificationsEnabled;
+                          setNotificationsEnabled(newVal);
+                          localStorage.setItem('admin_notifications', String(newVal));
+                          showToast(`Đã ${newVal ? 'bật' : 'tắt'} thông báo nộp bài!`, 'info');
+                        }}
+                        className={`w-12 h-6 rounded-full transition-all relative ${notificationsEnabled ? 'bg-brand-600' : 'bg-slate-300'}`}
+                      >
+                        <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${notificationsEnabled ? 'right-1' : 'left-1'}`} />
+                      </button>
+                    </div>
+
                     {Array.from(new Set(submissions.map(s => s.studentClass))).map(cls => {
                       const count = submissions.filter(s => s.studentClass === cls).length;
                       return (
@@ -1492,16 +1805,56 @@ export default function App() {
                   </div>
                   <div>
                     <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Thể loại</label>
-                    <select 
-                      value={newAssignment.category}
-                      onChange={e => setNewAssignment({...newAssignment, category: e.target.value})}
-                      className="w-full bg-brand-50/50 border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all appearance-none cursor-pointer"
-                    >
-                      <option>Đọc hiểu</option>
-                      <option>Ngữ pháp</option>
-                      <option>Văn học</option>
-                      <option>Nghị luận</option>
-                    </select>
+                    <div className="flex gap-2">
+                      <select 
+                        value={newAssignment.category}
+                        onChange={e => setNewAssignment({...newAssignment, category: e.target.value})}
+                        className="flex-1 bg-brand-50/50 border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all appearance-none cursor-pointer"
+                      >
+                        <option value="">Chọn thể loại...</option>
+                        {categories.map(cat => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                      <button 
+                        onClick={() => setShowAddCategory(!showAddCategory)}
+                        className="p-4 bg-brand-100 text-brand-600 rounded-2xl hover:bg-brand-200 transition-all"
+                        title="Thêm thể loại mới"
+                      >
+                        <PlusCircle className="w-6 h-6" />
+                      </button>
+                    </div>
+                    {showAddCategory && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-3 p-4 bg-white border-2 border-brand-100 rounded-2xl shadow-sm"
+                      >
+                        <div className="flex gap-2">
+                          <input 
+                            type="text"
+                            value={newCategory}
+                            onChange={e => setNewCategory(e.target.value)}
+                            placeholder="Tên thể loại mới..."
+                            className="flex-1 bg-brand-50 px-4 py-2 rounded-xl text-sm font-bold focus:outline-none"
+                          />
+                          <button 
+                            onClick={handleAddCategory}
+                            className="px-4 py-2 bg-brand-600 text-white rounded-xl text-xs font-black uppercase"
+                          >
+                            Thêm
+                          </button>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {categories.map(cat => (
+                            <div key={cat} className="flex items-center gap-1 px-2 py-1 bg-brand-50 text-brand-600 text-[10px] font-black rounded-lg border border-brand-100">
+                              {cat}
+                              <button onClick={() => handleDeleteCategory(cat)} className="hover:text-red-500"><XCircle className="w-3 h-3" /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
                   </div>
                   <div>
                     <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Độ khó</label>
@@ -1578,19 +1931,110 @@ export default function App() {
                   <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                     <h3 className="text-2xl font-black text-brand-900 tracking-tight">Câu hỏi & Đáp án</h3>
                     <div className="flex flex-wrap gap-3">
+                      <button 
+                        onClick={handleAddShortAnswerQuestion}
+                        className="flex items-center gap-2 text-xs font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-100 transition-all"
+                      >
+                        <PlusCircle className="w-4 h-4" /> Thêm câu hỏi tự luận
+                      </button>
                       <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-brand-600 hover:text-brand-700 bg-brand-50 px-3 py-1.5 rounded-xl border border-brand-100 transition-all">
                         <Upload className="w-4 h-4" /> Tải file câu hỏi (.docx, .pdf, .txt)
                         <input type="file" accept=".txt,.doc,.docx,.pdf" onChange={e => handleFileUpload(e, 'questions_only')} className="hidden" />
                       </label>
-                      <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-100 transition-all">
+                      <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 px-3 py-1.5 rounded-xl border border-indigo-100 transition-all">
                         <Upload className="w-4 h-4" /> Tải file đáp án (.docx, .pdf, .txt)
                         <input type="file" accept=".txt,.doc,.docx,.pdf" onChange={e => handleFileUpload(e, 'answer')} className="hidden" />
                       </label>
                     </div>
                   </div>
-                  <div className="p-8 bg-brand-50/30 rounded-3xl border-2 border-dashed border-brand-200 text-center">
-                    <p className="text-brand-400 font-bold italic">Danh sách câu hỏi và đáp án sẽ được tự động nhận dạng từ file tải lên hoặc tạo bằng AI.</p>
-                    <p className="text-brand-600 font-black mt-2">Hiện có: {newAssignment.questions?.length || 0} câu hỏi</p>
+                  
+                  <div className="space-y-6">
+                    {newAssignment.questions?.map((q, qIdx) => (
+                      <motion.div 
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        key={qIdx} 
+                        className="p-6 bg-white border-2 border-brand-100 rounded-[2rem] shadow-sm relative group"
+                      >
+                        <button 
+                          onClick={() => handleDeleteQuestion(qIdx)}
+                          className="absolute -top-2 -right-2 p-2 bg-red-500 text-white rounded-full opacity-100 transition-all shadow-lg hover:bg-red-600 z-10"
+                          title="Xóa câu hỏi"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                        
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-8 h-8 bg-brand-600 text-white rounded-lg flex items-center justify-center font-black text-sm">
+                            {qIdx + 1}
+                          </div>
+                          <div className="flex-1 flex flex-col gap-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-black text-brand-400 uppercase tracking-widest">
+                                {q.type === 'multiple-choice' ? 'Trắc nghiệm' : 'Tự luận'}
+                              </span>
+                            </div>
+                            <input 
+                              type="text"
+                              value={q.text}
+                              onChange={e => handleQuestionChange(qIdx, 'text', e.target.value)}
+                              placeholder="Nhập nội dung câu hỏi..."
+                              className="w-full bg-transparent border-b-2 border-brand-100 py-2 font-bold text-brand-900 focus:outline-none focus:border-brand-500"
+                            />
+                          </div>
+                        </div>
+
+                        {q.type === 'multiple-choice' ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            {q.options.map((opt, oIdx) => (
+                              <div key={oIdx} className="flex items-center gap-3">
+                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs ${q.answer === opt && opt !== '' ? 'bg-emerald-500 text-white' : 'bg-brand-50 text-brand-400'}`}>
+                                  {String.fromCharCode(65 + oIdx)}
+                                </div>
+                                <input 
+                                  type="text"
+                                  value={opt}
+                                  onChange={e => handleOptionChange(qIdx, oIdx, e.target.value)}
+                                  placeholder={`Lựa chọn ${String.fromCharCode(65 + oIdx)}...`}
+                                  className="flex-1 bg-brand-50/50 border border-brand-100 rounded-xl px-4 py-2 text-sm font-medium focus:outline-none focus:border-brand-500"
+                                />
+                                <button 
+                                  onClick={() => handleQuestionChange(qIdx, 'answer', opt)}
+                                  className={`p-2 rounded-lg transition-all ${q.answer === opt && opt !== '' ? 'bg-emerald-100 text-emerald-600' : 'bg-brand-50 text-brand-300 hover:text-emerald-500'}`}
+                                >
+                                  <CheckCircle2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mb-4">
+                            <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Đáp án gợi ý / Từ khóa</label>
+                            <textarea 
+                              value={q.answer}
+                              onChange={e => handleQuestionChange(qIdx, 'answer', e.target.value)}
+                              placeholder="Nhập đáp án đúng hoặc các từ khóa quan trọng để AI chấm điểm..."
+                              className="w-full bg-brand-50/50 border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all min-h-[100px]"
+                            />
+                          </div>
+                        )}
+                        
+                        <div className="flex items-center gap-2 text-[10px] font-black text-brand-400 uppercase tracking-widest">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                          {q.type === 'multiple-choice' ? 'Đáp án đúng: ' : 'Đáp án chuẩn: '}
+                          <span className="text-emerald-600 ml-1 truncate max-w-[200px]">{q.answer || 'Chưa có'}</span>
+                        </div>
+                      </motion.div>
+                    ))}
+                    
+                    {(!newAssignment.questions || newAssignment.questions.length === 0) && (
+                      <div className="p-12 bg-brand-50/30 rounded-[2.5rem] border-2 border-dashed border-brand-200 text-center">
+                        <div className="w-16 h-16 bg-brand-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                          <FileText className="w-8 h-8 text-brand-400" />
+                        </div>
+                        <p className="text-brand-400 font-bold italic">Chưa có câu hỏi nào. Hãy thêm câu hỏi mới hoặc sử dụng AI để tạo tự động.</p>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1946,6 +2390,107 @@ export default function App() {
             </div>
           )}
 
+          {adminActiveTab === 'users' && (
+            <div className="space-y-10">
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="glass-card overflow-hidden"
+              >
+                <div className="p-8 border-b border-brand-100/50 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                  <div>
+                    <h2 className="text-3xl font-black text-brand-900 tracking-tight">Quản lý người dùng</h2>
+                    <p className="text-brand-400 font-bold text-xs uppercase tracking-widest mt-1">Danh sách học sinh và quản trị viên</p>
+                  </div>
+                  <div className="flex items-center gap-4 bg-brand-50 p-2 rounded-2xl border border-brand-100">
+                    <Filter className="w-5 h-5 text-brand-400 ml-2" />
+                    <select 
+                      value={adminClassFilter} 
+                      onChange={e => setAdminClassFilter(e.target.value)}
+                      className="bg-transparent px-4 py-2 rounded-xl outline-none font-bold text-brand-900 text-sm cursor-pointer"
+                    >
+                      <option>Tất cả lớp</option>
+                      {Array.from(new Set(allProfiles.map(p => p.studentClass))).filter(Boolean).map(cls => (
+                        <option key={cls} value={cls}>Lớp {cls}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-brand-50/50 text-brand-400 text-[10px] uppercase font-black tracking-widest">
+                        <th className="px-8 py-6">Người dùng</th>
+                        <th className="px-8 py-6">Lớp</th>
+                        <th className="px-8 py-6">Vai trò</th>
+                        <th className="px-8 py-6 text-center">Điểm số</th>
+                        <th className="px-8 py-6 text-center">Cấp độ</th>
+                        <th className="px-8 py-6 text-right">Hành động</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-brand-100/50">
+                      {allProfiles
+                        .filter(p => adminClassFilter === 'Tất cả' || adminClassFilter === 'Tất cả lớp' || p.studentClass === adminClassFilter)
+                        .map((p) => (
+                          <tr key={p.userId} className="hover:bg-brand-50/30 transition-colors group">
+                            <td className="px-8 py-6">
+                              <div className="flex items-center gap-4">
+                                <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center font-black text-brand-600 shadow-sm border border-brand-100 group-hover:scale-110 transition-transform overflow-hidden">
+                                  {p.photoURL ? (
+                                    <img src={p.photoURL} alt={p.displayName} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                  ) : (
+                                    p.displayName?.[0] || '?'
+                                  )}
+                                </div>
+                                <div>
+                                  <div className="font-bold text-brand-900">{p.displayName}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-8 py-6">
+                              <span className="px-3 py-1 bg-brand-50 text-brand-600 rounded-lg font-bold text-xs border border-brand-100">
+                                {p.studentClass || 'N/A'}
+                              </span>
+                            </td>
+                            <td className="px-8 py-6">
+                              <span className={`px-3 py-1 rounded-lg font-bold text-xs border ${p.role === 'admin' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-blue-50 text-blue-600 border-blue-100'}`}>
+                                {p.role === 'admin' ? 'Admin' : 'Học sinh'}
+                              </span>
+                            </td>
+                            <td className="px-8 py-6 text-center">
+                              <div className="text-lg font-black text-brand-900">
+                                {p.points || 0}
+                              </div>
+                            </td>
+                            <td className="px-8 py-6 text-center">
+                              <div className="text-lg font-black text-brand-600">
+                                {p.level || 1}
+                              </div>
+                            </td>
+                            <td className="px-8 py-6 text-right">
+                              <div className="flex justify-end gap-2">
+                                <button 
+                                  onClick={() => {
+                                    if (confirm(`Bạn có chắc chắn muốn xóa người dùng ${p.displayName}?`)) {
+                                      // Logic to delete profile would go here
+                                      showToast('Tính năng xóa đang được phát triển', 'info');
+                                    }
+                                  }}
+                                  className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all"
+                                >
+                                  <Trash2 className="w-5 h-5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </motion.div>
+            </div>
+          )}
+
           {adminActiveTab === 'ai_teaching' && (
             <div className="space-y-10">
               <motion.div 
@@ -2092,7 +2637,10 @@ export default function App() {
     </AnimatePresence>
   );
 
-  const renderStudentView = () => {
+    const renderStudentView = () => {
+    // Ensure all categories from assignments are available in the filter
+    const allAvailableCategories = Array.from(new Set(['Tất cả', ...categories, ...assignments.map(a => a.category).filter(Boolean)]));
+
     const filteredAssignments = assignments.filter(a => {
       const matchCat = categoryFilter === 'Tất cả' || a.category === categoryFilter;
       const matchDiff = difficultyFilter === 'Tất cả' || a.difficulty === difficultyFilter;
@@ -2130,6 +2678,18 @@ export default function App() {
                 </motion.div>
               )}
               <div className="flex items-center gap-4 md:gap-6">
+                <div className="relative group cursor-pointer" onClick={() => setShowProfileModal(true)}>
+                  <div className="w-10 h-10 md:w-12 md:h-12 rounded-2xl bg-brand-100 border-2 border-brand-200 overflow-hidden flex items-center justify-center">
+                    {profile?.photoURL ? (
+                      <img src={profile.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <User className="w-6 h-6 text-brand-600" />
+                    )}
+                  </div>
+                  <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-emerald-500 border-2 border-white rounded-full flex items-center justify-center">
+                    <PlusCircle className="w-3 h-3 text-white" />
+                  </div>
+                </div>
                 <div className="text-right">
                   <div className="font-black text-brand-950 text-sm md:text-base">{user?.displayName}</div>
                   <div className="text-[10px] md:text-xs text-brand-600 font-bold">Lớp {studentClass || '...'}</div>
@@ -2203,11 +2763,9 @@ export default function App() {
                       onChange={e => setCategoryFilter(e.target.value)}
                       className="w-full px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold text-brand-950"
                     >
-                      <option>Tất cả</option>
-                      <option>Thơ</option>
-                      <option>Văn xuôi</option>
-                      <option>Kịch</option>
-                      <option>Lý luận văn học</option>
+                      {allAvailableCategories.map(cat => (
+                        <option key={cat} value={cat}>{cat === 'Tất cả' ? 'Tất cả thể loại' : cat}</option>
+                      ))}
                     </select>
                   </div>
                   <div>
@@ -2270,39 +2828,66 @@ export default function App() {
               </div>
 
               <div id="assignments" className="space-y-6">
-                <h2 className="text-2xl font-black text-brand-900 flex items-center gap-3">
-                  <FileText className="w-6 h-6 text-brand-600" /> Bài tập ôn luyện
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {filteredAssignments.map(assignment => (
-                    <motion.div 
-                      key={assignment.id} 
-                      whileHover={{ y: -5 }}
-                      className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col hover:shadow-xl hover:border-brand-200 transition-all group"
+                <div className="flex items-center justify-between">
+                  <h2 className="text-2xl font-black text-brand-900 flex items-center gap-3">
+                    <FileText className="w-6 h-6 text-brand-600" /> Bài tập ôn luyện
+                  </h2>
+                  {(categoryFilter !== 'Tất cả' || difficultyFilter !== 'Tất cả') && (
+                    <button 
+                      onClick={() => { setCategoryFilter('Tất cả'); setDifficultyFilter('Tất cả'); }}
+                      className="text-xs font-black text-brand-600 hover:text-brand-800 uppercase tracking-widest flex items-center gap-1"
                     >
-                      <div className="flex justify-between items-start mb-6">
-                        <div className="flex gap-2">
-                          <span className="px-3 py-1 bg-brand-50 text-brand-600 text-[10px] font-black rounded-lg uppercase tracking-widest">{assignment.category}</span>
-                          <span className={`px-3 py-1 text-[10px] font-black rounded-lg uppercase tracking-widest ${
-                            assignment.difficulty === 'Dễ' ? 'bg-emerald-50 text-emerald-600' : 
-                            assignment.difficulty === 'Trung bình' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-600'
-                          }`}>{assignment.difficulty}</span>
-                        </div>
-                        <button onClick={() => setLeaderboardAssignmentId(assignment.id)} className="text-slate-300 hover:text-amber-500 transition-colors">
-                          <Trophy className="w-5 h-5" />
-                        </button>
-                      </div>
-                      <h3 className="text-xl font-black mb-4 text-brand-950 group-hover:text-brand-600 transition-colors">{assignment.title}</h3>
-                      <p className="text-slate-500 text-sm mb-8 line-clamp-2">{assignment.description || 'Không có mô tả cho bài tập này.'}</p>
-                      <button 
-                        onClick={() => handleStartQuiz(assignment)} 
-                        className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-brand-600 transition-all shadow-lg shadow-slate-900/10 active:scale-95"
-                      >
-                        Bắt đầu làm bài
-                      </button>
-                    </motion.div>
-                  ))}
+                      <XCircle className="w-4 h-4" /> Xóa bộ lọc
+                    </button>
+                  )}
                 </div>
+                
+                {filteredAssignments.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {filteredAssignments.map(assignment => (
+                      <motion.div 
+                        key={assignment.id} 
+                        whileHover={{ y: -5 }}
+                        className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col hover:shadow-xl hover:border-brand-200 transition-all group"
+                      >
+                        <div className="flex justify-between items-start mb-6">
+                          <div className="flex gap-2">
+                            <span className="px-3 py-1 bg-brand-50 text-brand-600 text-[10px] font-black rounded-lg uppercase tracking-widest">{assignment.category}</span>
+                            <span className={`px-3 py-1 text-[10px] font-black rounded-lg uppercase tracking-widest ${
+                              assignment.difficulty === 'Dễ' ? 'bg-emerald-50 text-emerald-600' : 
+                              assignment.difficulty === 'Trung bình' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-600'
+                            }`}>{assignment.difficulty}</span>
+                          </div>
+                          <button onClick={() => setLeaderboardAssignmentId(assignment.id)} className="text-slate-300 hover:text-amber-500 transition-colors">
+                            <Trophy className="w-5 h-5" />
+                          </button>
+                        </div>
+                        <h3 className="text-xl font-black mb-4 text-brand-950 group-hover:text-brand-600 transition-colors">{assignment.title}</h3>
+                        <p className="text-slate-500 text-sm mb-8 line-clamp-2">{assignment.description || 'Không có mô tả cho bài tập này.'}</p>
+                        <button 
+                          onClick={() => handleStartQuiz(assignment)} 
+                          className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-brand-600 transition-all shadow-lg shadow-slate-900/10 active:scale-95"
+                        >
+                          Bắt đầu làm bài
+                        </button>
+                      </motion.div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="bg-white p-12 rounded-[2.5rem] border-2 border-dashed border-slate-200 text-center">
+                    <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                      <FileText className="w-8 h-8 text-slate-300" />
+                    </div>
+                    <h3 className="text-xl font-black text-slate-900 mb-2">Không tìm thấy bài tập</h3>
+                    <p className="text-slate-500 font-medium mb-6">Không có bài tập nào phù hợp với bộ lọc hiện tại của bạn.</p>
+                    <button 
+                      onClick={() => { setCategoryFilter('Tất cả'); setDifficultyFilter('Tất cả'); }}
+                      className="px-8 py-3 bg-brand-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-lg shadow-brand-500/20 hover:bg-brand-700 transition-all"
+                    >
+                      Xem tất cả bài tập
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div id="leaderboard" className="space-y-6">
@@ -2474,6 +3059,77 @@ export default function App() {
         </main>
 
         <AnimatePresence>
+          {showProfileModal && (
+            <div 
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+              onClick={() => setShowProfileModal(false)}
+            >
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }} 
+                animate={{ opacity: 1, scale: 1 }} 
+                exit={{ opacity: 0, scale: 0.9 }} 
+                className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="p-8 text-center">
+                  <div className="w-32 h-32 rounded-[2rem] bg-brand-50 border-4 border-brand-100 mx-auto mb-6 flex items-center justify-center overflow-hidden relative group">
+                    {profile?.photoURL ? (
+                      <img src={profile.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <User className="w-16 h-16 text-brand-200" />
+                    )}
+                    <label className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer">
+                      <Upload className="w-8 h-8 text-white" />
+                      <input type="file" accept="image/*" onChange={handleProfilePictureUpload} className="hidden" />
+                    </label>
+                  </div>
+                  <h3 className="text-2xl font-black text-brand-950 mb-2">{profile?.displayName}</h3>
+                  <p className="text-brand-500 text-sm font-medium mb-8">Cập nhật ảnh đại diện để bạn bè dễ nhận ra nhé!</p>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <label className="flex flex-col items-center gap-3 p-6 bg-brand-50 rounded-3xl border-2 border-brand-100 cursor-pointer hover:bg-brand-100 transition-all">
+                      <Upload className="w-8 h-8 text-brand-600" />
+                      <span className="text-xs font-black text-brand-900 uppercase">Tải ảnh lên</span>
+                      <input type="file" accept="image/*" onChange={handleProfilePictureUpload} className="hidden" />
+                    </label>
+                    <button 
+                      onClick={() => setShowProfileModal(false)}
+                      className="flex flex-col items-center gap-3 p-6 bg-slate-50 rounded-3xl border-2 border-slate-100 hover:bg-slate-100 transition-all"
+                    >
+                      <XCircle className="w-8 h-8 text-slate-400" />
+                      <span className="text-xs font-black text-slate-900 uppercase">Đóng</span>
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Floating AI Agents Buttons */}
+        <div className="fixed bottom-8 right-8 z-[60] flex flex-col gap-4">
+          <motion.button
+            whileHover={{ scale: 1.1, rotate: 5 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={() => setShowSearchAgent(true)}
+            className="w-14 h-14 bg-stone-900 text-white rounded-2xl shadow-2xl flex items-center justify-center border-2 border-stone-800 hover:bg-stone-800 transition-all"
+            title="Tìm kiếm thông tin AI"
+          >
+            <Search className="w-6 h-6" />
+          </motion.button>
+          <motion.button
+            whileHover={{ scale: 1.1, rotate: -5 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={() => setShowAIChat(true)}
+            className="w-14 h-14 bg-brand-600 text-white rounded-2xl shadow-2xl flex items-center justify-center border-2 border-brand-500 hover:bg-brand-700 transition-all"
+            title="Chat với trợ lý AI"
+          >
+            <MessageSquare className="w-6 h-6" />
+          </motion.button>
+        </div>
+
+        <audio ref={audioRef} src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto" />
+        <AnimatePresence>
           {showRankLeaderboard && (
             <div 
               className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 md:p-6"
@@ -2498,7 +3154,7 @@ export default function App() {
                 </div>
                 <div className="p-6 md:p-8 max-h-[60vh] overflow-y-auto bg-white">
                   <div className="space-y-3">
-                    {allProfiles.map((p, idx) => (
+                    {allProfiles.filter(p => p.role !== 'admin').map((p, idx) => (
                       <div key={p.userId} className={`flex items-center gap-4 p-4 rounded-2xl border transition-all ${p.userId === user?.uid ? 'bg-brand-50 border-brand-200 shadow-sm' : 'bg-white border-brand-100 hover:border-brand-200'}`}>
                         <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${idx === 0 ? 'bg-amber-100 text-amber-600' : idx === 1 ? 'bg-slate-100 text-slate-600' : idx === 2 ? 'bg-orange-100 text-orange-600' : 'bg-brand-50 text-brand-400'}`}>
                           {idx + 1}
@@ -2830,24 +3486,18 @@ export default function App() {
                     <h3 className="font-black text-brand-900 uppercase tracking-widest text-xs ml-1">Chi tiết bài làm</h3>
                     {selectedSubmission.answers.map((ans, idx) => (
                       <div key={idx} className={`p-6 rounded-2xl border-2 ${ans.isCorrect ? 'bg-emerald-50/30 border-emerald-100' : 'bg-red-50/30 border-red-100'}`}>
-                        <div className="flex items-start gap-4">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 font-black text-xs ${ans.isCorrect ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
-                            {idx + 1}
-                          </div>
-                          <div className="flex-1">
-                            <div className="font-bold text-brand-900 mb-2">Câu {idx + 1}</div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                              <div>
-                                <span className="text-brand-400 font-bold block mb-1 uppercase text-[10px]">Học sinh chọn</span>
-                                <span className={`font-bold ${ans.isCorrect ? 'text-emerald-600' : 'text-red-600'}`}>{ans.studentAnswer || '(Trống)'}</span>
-                              </div>
-                              <div>
-                                <span className="text-brand-400 font-bold block mb-1 uppercase text-[10px]">Đáp án đúng</span>
-                                <span className="font-bold text-emerald-600">{selectedSubmission.answers[idx].isCorrect ? ans.studentAnswer : 'Xem lại đề bài'}</span>
-                              </div>
-                            </div>
-                          </div>
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="font-bold text-brand-900">Câu {idx + 1}: {ans.questionText}</div>
+                          {ans.isCorrect ? <CheckCircle2 className="w-5 h-5 text-emerald-500" /> : <XCircle className="w-5 h-5 text-red-500" />}
                         </div>
+                        <div className="text-sm text-brand-600">
+                          <span className="font-bold">Trả lời:</span> {ans.studentAnswer}
+                        </div>
+                        {!ans.isCorrect && (
+                          <div className="text-sm text-emerald-600 mt-1">
+                            <span className="font-bold">Đáp án đúng:</span> {ans.correctAnswer}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -2856,223 +3506,201 @@ export default function App() {
             </div>
           )}
         </AnimatePresence>
-
-        {/* Floating Actions */}
-        <div className="fixed bottom-6 right-6 md:bottom-8 md:right-8 flex flex-col gap-4 z-40">
-          <motion.button 
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={() => setShowSearchAgent(true)} 
-            className="w-14 h-14 md:w-16 md:h-16 bg-brand-600 text-white rounded-2xl md:rounded-3xl shadow-2xl shadow-brand-600/20 flex items-center justify-center transition-all border border-white/10"
-          >
-            <Globe className="w-6 h-6 md:w-7 md:h-7" />
-          </motion.button>
-          <motion.button 
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={() => setShowAIChat(!showAIChat)} 
-            className="w-14 h-14 md:w-16 md:h-16 bg-brand-600 text-white rounded-2xl md:rounded-3xl shadow-2xl shadow-brand-600/20 flex items-center justify-center transition-all border border-white/10"
-          >
-            <Bot className="w-6 h-6 md:w-7 md:h-7" />
-          </motion.button>
-        </div>
       </div>
     );
   };
 
   const renderSpeedRunAdmin = () => (
-    <div className="min-h-screen bg-stone-50 flex">
-      <div className="w-64 bg-white border-r border-stone-200 p-6 flex flex-col">
-        <div className="flex items-center gap-3 mb-10">
-          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center">
-            <BookOpen className="w-6 h-6 text-white" />
+    <div className="min-h-screen bg-[#f8fafc] p-4 md:p-10">
+      <div className="max-w-6xl mx-auto">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
+          <div className="flex items-center gap-5">
+            <div className="w-14 h-14 md:w-16 md:h-16 bg-brand-900 rounded-2xl flex items-center justify-center shadow-xl shadow-brand-900/20">
+              <Clock className="w-7 h-7 md:w-8 md:h-8 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl md:text-3xl font-black text-brand-900 tracking-tight">Quản lý Speed Run</h1>
+              <p className="text-brand-400 font-bold text-[10px] md:text-xs uppercase tracking-widest mt-1">Thiết lập câu hỏi thử thách tốc độ</p>
+            </div>
           </div>
-          <span className="font-bold text-xl">EduAdmin</span>
-        </div>
-        <nav className="flex-1 space-y-2">
-          <button onClick={() => setRole('admin')} className="w-full flex items-center gap-3 px-4 py-3 text-stone-500 hover:bg-stone-50 rounded-xl font-medium transition-colors">
-            <LayoutDashboard className="w-5 h-5" /> Dashboard
-          </button>
-          <button onClick={() => setRole('speedrun')} className="w-full flex items-center gap-3 px-4 py-3 bg-indigo-50 text-indigo-600 rounded-xl font-medium">
-            <Clock className="w-5 h-5" /> Speed Run
-          </button>
-        </nav>
-        <div className="pt-6 border-t border-stone-100 space-y-2">
           <button 
-            onClick={() => {
-              signOut(auth).then(() => {
-                setRole('home');
-                setIsAdminLoggedIn(false);
-                localStorage.removeItem('app_role');
-                localStorage.removeItem('admin_logged_in');
-              }).catch(err => {
-                console.error('Sign Out Error:', err);
-              });
-            }}
-            className="w-full flex items-center gap-3 px-4 py-3 text-red-500 hover:bg-red-50 rounded-xl font-medium transition-colors"
+            onClick={() => setRole('admin')}
+            className="flex items-center justify-center gap-2 px-6 py-3 bg-white border-2 border-brand-100 rounded-xl font-bold text-brand-600 hover:bg-brand-50 transition-all text-sm"
           >
-            <LogOut className="w-5 h-5" /> Đăng xuất
+            <ArrowLeft className="w-4 h-4" /> Quay lại Dashboard
           </button>
         </div>
-      </div>
 
-      <div className="flex-1 p-8 overflow-y-auto">
-        <div className="max-w-4xl mx-auto space-y-8">
-          <div>
-            <h1 className="text-3xl font-bold text-stone-900">Quản lý Speed Run</h1>
-            <p className="text-stone-500">Thêm các câu hỏi ngắn để học sinh luyện phản xạ</p>
-          </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-1">
+            <div className="glass-card p-6 md:p-8 sticky top-8">
+              <h2 className="text-xl font-black text-brand-900 mb-6 flex items-center gap-2">
+                <PlusCircle className="w-5 h-5 text-brand-600" />
+                {editingSrId ? 'Cập nhật câu hỏi' : 'Thêm câu hỏi mới'}
+              </h2>
+              
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Nội dung câu hỏi</label>
+                  <textarea 
+                    value={srForm.text}
+                    onChange={e => setSrForm({...srForm, text: e.target.value})}
+                    className="w-full bg-brand-50 border-2 border-brand-100 rounded-2xl px-5 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all min-h-[120px]"
+                    placeholder="Nhập câu hỏi..."
+                  />
+                </div>
 
-            <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-bold">{editingSrId ? 'Cập nhật câu hỏi' : 'Thêm câu hỏi mới (4 lựa chọn)'}</h2>
-                <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-indigo-600 hover:text-indigo-700">
-                  <Upload className="w-4 h-4" /> Tải file câu hỏi (.docx, .pdf, .txt)
-                  <input type="file" accept=".txt,.doc,.docx,.pdf" onChange={e => handleFileUpload(e, 'speedrun')} className="hidden" />
-                </label>
-              </div>
-              <div className="space-y-4 mb-6">
-                <input 
-                  type="text" 
-                  placeholder="Câu hỏi (VD: Tác giả Vợ chồng A Phủ?)" 
-                  className="w-full px-4 py-3 rounded-xl border border-stone-200 outline-none" 
-                  value={srForm.text}
-                  onChange={e => setSrForm({...srForm, text: e.target.value})}
-                />
-                <div className="grid grid-cols-2 gap-4">
-                  {srForm.options.map((opt, idx) => (
-                    <div key={idx} className="flex items-center gap-2">
-                      <span className="font-bold text-stone-400">{String.fromCharCode(65 + idx)}</span>
-                      <input 
-                        type="text"
-                        placeholder={`Lựa chọn ${String.fromCharCode(65 + idx)}`}
-                        className="flex-1 px-4 py-2 rounded-xl border border-stone-200 outline-none text-sm"
-                        value={opt}
-                        onChange={e => {
-                          const newOpts = [...srForm.options];
-                          newOpts[idx] = e.target.value;
-                          setSrForm({...srForm, options: newOpts});
-                        }}
-                      />
-                    </div>
-                  ))}
+                <div>
+                  <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Đáp án đúng</label>
+                  <input 
+                    type="text"
+                    value={srForm.answer}
+                    onChange={e => setSrForm({...srForm, answer: e.target.value})}
+                    className="w-full bg-brand-50 border-2 border-brand-100 rounded-2xl px-5 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all"
+                    placeholder="Nhập đáp án..."
+                  />
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-bold text-stone-400 uppercase ml-1">Đáp án đúng (A, B, C, hoặc D)</label>
-                    <input 
-                      type="text" 
-                      placeholder="VD: A" 
-                      className="px-4 py-3 rounded-xl border border-stone-200 outline-none uppercase" 
-                      value={srForm.answer}
-                      onChange={e => setSrForm({...srForm, answer: e.target.value.toUpperCase()})}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-bold text-stone-400 uppercase ml-1">Thể loại</label>
-                    <select 
-                      className="px-4 py-3 rounded-xl border border-stone-200 outline-none"
-                      value={srForm.category}
-                      onChange={e => setSrForm({...srForm, category: e.target.value})}
-                    >
-                      <option>Tác giả</option>
-                      <option>Năm sáng tác</option>
-                      <option>Phong cách</option>
-                      <option>Nội dung</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-              <div className="flex justify-end gap-3">
-                {editingSrId && (
-                  <button 
-                    onClick={() => {
-                      setEditingSrId(null);
-                      setSrForm({ text: '', options: ['', '', '', ''], answer: '', category: 'Tác giả' });
-                    }}
-                    className="px-6 py-3 bg-stone-100 text-stone-600 rounded-xl font-bold"
+
+                <div>
+                  <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest mb-2 ml-1">Thể loại</label>
+                  <select 
+                    value={srForm.category}
+                    onChange={e => setSrForm({...srForm, category: e.target.value})}
+                    className="w-full bg-brand-50 border-2 border-brand-100 rounded-2xl px-5 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all appearance-none"
                   >
-                    Hủy
-                  </button>
-                )}
-                <button 
-                  onClick={async () => {
-                    if (!srForm.text || !srForm.answer) {
-                      showToast('Vui lòng điền đầy đủ câu hỏi và đáp án!', 'error');
-                      return;
-                    }
-                    try {
-                      if (editingSrId) {
-                        await updateDoc(doc(db, 'speedrunQuestions', editingSrId), srForm);
-                        setEditingSrId(null);
-                        showToast('Đã cập nhật câu hỏi!', 'success');
-                      } else {
-                        await addDoc(collection(db, 'speedrunQuestions'), srForm);
-                        showToast('Đã thêm câu hỏi Speed Run!', 'success');
+                    {categories.map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="pt-4">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={async () => {
+                      if (!srForm.text || !srForm.answer) {
+                        showToast('Vui lòng nhập đầy đủ thông tin!', 'error');
+                        return;
                       }
-                      setSrForm({ text: '', options: ['', '', '', ''], answer: '', category: 'Tác giả' });
-                    } catch (error) {
-                      handleFirestoreError(error, editingSrId ? OperationType.UPDATE : OperationType.CREATE, 'speedrunQuestions');
-                    }
-                  }}
-                  className="px-10 py-3 bg-brand-900 text-white rounded-xl font-bold shadow-lg shadow-brand-900/20"
-                >
-                  {editingSrId ? 'Cập nhật' : 'Thêm câu hỏi'}
-                </button>
+                      try {
+                        if (editingSrId) {
+                          await updateDoc(doc(db, 'speedrunQuestions', editingSrId), srForm);
+                          setEditingSrId(null);
+                          showToast('Đã cập nhật câu hỏi!', 'success');
+                        } else {
+                          await addDoc(collection(db, 'speedrunQuestions'), srForm);
+                          showToast('Đã thêm câu hỏi Speed Run!', 'success');
+                        }
+                        setSrForm({ text: '', options: ['', '', '', ''], answer: '', category: categories[0] || 'Tác giả' });
+                      } catch (error) {
+                        handleFirestoreError(error, editingSrId ? OperationType.UPDATE : OperationType.CREATE, 'speedrunQuestions');
+                      }
+                    }}
+                    className="w-full py-5 bg-brand-900 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-brand-900/20 hover:shadow-brand-900/40 transition-all"
+                  >
+                    {editingSrId ? 'CẬP NHẬT CÂU HỎI' : 'THÊM CÂU HỎI'}
+                  </motion.button>
+                  {editingSrId && (
+                    <button 
+                      onClick={() => {
+                        setEditingSrId(null);
+                        setSrForm({ text: '', options: ['', '', '', ''], answer: '', category: categories[0] || 'Tác giả' });
+                      }}
+                      className="w-full mt-3 py-3 text-brand-400 font-bold text-xs hover:text-brand-600 transition-colors"
+                    >
+                      Hủy chỉnh sửa
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
+          </div>
 
-          <div className="bg-white rounded-3xl border border-stone-200 shadow-sm overflow-hidden">
-            <table className="w-full text-left">
-              <thead className="bg-stone-50 text-stone-500 text-xs uppercase font-bold">
-                <tr>
-                  <th className="px-6 py-4">Câu hỏi</th>
-                  <th className="px-6 py-4">Đáp án</th>
-                  <th className="px-6 py-4">Thể loại</th>
-                  <th className="px-6 py-4">Hành động</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-stone-100">
-                {speedrunQuestions.map(q => (
-                  <tr key={q.id}>
-                    <td className="px-6 py-4 font-medium">{q.text}</td>
-                    <td className="px-6 py-4">{q.answer}</td>
-                    <td className="px-6 py-4"><span className="px-2 py-1 bg-stone-100 rounded-lg text-[10px] font-bold uppercase">{q.category}</span></td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <button 
-                          onClick={() => {
-                            setSrForm({
-                              text: q.text,
-                              options: q.options,
-                              answer: q.answer,
-                              category: q.category
-                            });
-                            setEditingSrId(q.id);
-                            window.scrollTo({ top: 0, behavior: 'smooth' });
-                          }}
-                          className="text-indigo-600 hover:text-indigo-800 font-bold"
-                        >
-                          Sửa
-                        </button>
-                        <button 
-                          onClick={async () => {
-                            try {
-                              await deleteDoc(doc(db, 'speedrunQuestions', q.id));
-                            } catch (error) {
-                              handleFirestoreError(error, OperationType.DELETE, `speedrunQuestions/${q.id}`);
-                            }
-                          }} 
-                          className="text-red-500 hover:text-red-700 font-bold"
-                        >
-                          Xoá
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="lg:col-span-2">
+            <div className="glass-card overflow-hidden">
+              <div className="p-6 md:p-8 border-b border-brand-100 flex items-center justify-between bg-brand-50/30">
+                <h2 className="text-xl font-black text-brand-900">Danh sách câu hỏi</h2>
+                <span className="px-4 py-1 bg-brand-100 text-brand-600 rounded-full text-[10px] font-black uppercase tracking-widest">
+                  {speedrunQuestions.length} câu hỏi
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-brand-50/50">
+                      <th className="px-6 py-4 text-[10px] font-black text-brand-400 uppercase tracking-widest border-b border-brand-100">Câu hỏi</th>
+                      <th className="px-6 py-4 text-[10px] font-black text-brand-400 uppercase tracking-widest border-b border-brand-100">Đáp án</th>
+                      <th className="px-6 py-4 text-[10px] font-black text-brand-400 uppercase tracking-widest border-b border-brand-100">Thể loại</th>
+                      <th className="px-6 py-4 text-[10px] font-black text-brand-400 uppercase tracking-widest border-b border-brand-100 text-right">Thao tác</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-brand-100/50">
+                    {speedrunQuestions.map(q => (
+                      <tr key={q.id} className="hover:bg-brand-50/30 transition-colors group">
+                        <td className="px-6 py-5">
+                          <div className="font-bold text-brand-900 text-sm line-clamp-2 max-w-xs">{q.text}</div>
+                        </td>
+                        <td className="px-6 py-5">
+                          <div className="font-black text-brand-600 text-sm">{q.answer}</div>
+                        </td>
+                        <td className="px-6 py-5">
+                          <span className="px-3 py-1 bg-white border border-brand-100 rounded-lg text-[10px] font-bold text-brand-500 uppercase">
+                            {q.category}
+                          </span>
+                        </td>
+                        <td className="px-6 py-5 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button 
+                              onClick={() => {
+                                setSrForm({
+                                  text: q.text,
+                                  options: q.options,
+                                  answer: q.answer,
+                                  category: q.category
+                                });
+                                setEditingSrId(q.id);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                              }}
+                              className="p-2 text-brand-400 hover:text-brand-600 hover:bg-brand-100 rounded-lg transition-all"
+                              title="Chỉnh sửa"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={async () => {
+                                if (confirm('Bạn có chắc muốn xóa câu hỏi này?')) {
+                                  try {
+                                    await deleteDoc(doc(db, 'speedrunQuestions', q.id));
+                                    showToast('Đã xóa câu hỏi!', 'success');
+                                  } catch (error) {
+                                    handleFirestoreError(error, OperationType.DELETE, `speedrunQuestions/${q.id}`);
+                                  }
+                                }
+                              }}
+                              className="p-2 text-brand-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                              title="Xóa"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {speedrunQuestions.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="px-6 py-20 text-center">
+                          <div className="w-16 h-16 bg-brand-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                            <Clock className="w-8 h-8 text-brand-200" />
+                          </div>
+                          <p className="text-brand-400 font-bold text-sm">Chưa có câu hỏi Speed Run nào.</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
