@@ -50,7 +50,10 @@ import {
   Bot,
   Flame,
   Sparkles,
-  UserPlus
+  UserPlus,
+  Bell,
+  BellRing,
+  Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -161,6 +164,8 @@ interface Assignment {
   questions: Question[];
   knowledgeBase: string;
   createdAt: any;
+  allowChat?: boolean;
+  allowSearch?: boolean;
 }
 
 interface Submission {
@@ -278,6 +283,7 @@ export default function App() {
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState('Tất cả');
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => localStorage.getItem('admin_notifications') !== 'false');
+  const [studentNotificationsEnabled, setStudentNotificationsEnabled] = useState(true);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [difficultyFilter, setDifficultyFilter] = useState('Tất cả');
@@ -296,7 +302,10 @@ export default function App() {
     description: '',
     content: '',
     questions: [],
-    knowledgeBase: ''
+    knowledgeBase: '',
+    difficulty: 'Dễ',
+    allowChat: true,
+    allowSearch: true
   });
 
   const syncProfile = async (u: FirebaseUser) => {
@@ -441,12 +450,49 @@ export default function App() {
       if (snap.exists()) setGlobalKnowledgeBase(snap.data().content);
     }, (error) => handleFirestoreError(error, OperationType.GET, 'config/global_kb'));
 
+    const configRef = doc(db, 'config', 'notifications');
+    const unsubConfig = onSnapshot(configRef, (snap) => {
+      if (snap.exists()) setStudentNotificationsEnabled(snap.data().studentEnabled ?? true);
+    }, (error) => handleFirestoreError(error, OperationType.GET, 'config/notifications'));
+
     return () => {
       unsubSubmissions();
       unsubKB();
+      unsubConfig();
     };
   }, [user]);
 
+  useEffect(() => {
+    if (role === 'student' && studentNotificationsEnabled) {
+      const q = query(collection(db, 'assignments'), orderBy('createdAt', 'desc'), limit(1));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        if (!snap.empty) {
+          const latest = snap.docs[0].data() as Assignment;
+          const lastNotifiedId = localStorage.getItem('last_notified_assignment');
+          
+          if (latest.id !== lastNotifiedId && latest.createdAt) {
+            const now = new Date().getTime();
+            const createTime = latest.createdAt.toMillis();
+            if (now - createTime < 30000) {
+              showToast(`Giáo viên vừa giao bài tập mới: ${latest.title}!`, 'info');
+              localStorage.setItem('last_notified_assignment', latest.id);
+            }
+          }
+        }
+      });
+      return () => unsubscribe();
+    }
+  }, [role, studentNotificationsEnabled]);
+
+  const requestNotificationPermission = () => {
+    if ('Notification' in window) {
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+          showToast('Đã bật thông báo hệ thống!', 'success');
+        }
+      });
+    }
+  };
   useEffect(() => {
     let timer: any;
     if (isSpeedRunActive && speedRunTime > 0) {
@@ -501,13 +547,6 @@ export default function App() {
       setIsAnalyzingSearch(false);
     }
   };
-  useEffect(() => {
-    if (role === 'student' && user) {
-      setShowAIChat(true);
-      setShowSearchAgent(true);
-    }
-  }, [role, user]);
-
   const handleProfilePictureUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
@@ -1740,6 +1779,33 @@ export default function App() {
                       </button>
                     </div>
 
+                    <div className="flex items-center justify-between p-6 bg-brand-50 rounded-3xl border border-brand-100">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-brand-100 rounded-xl flex items-center justify-center">
+                          <Bell className="w-5 h-5 text-brand-600" />
+                        </div>
+                        <div>
+                          <div className="font-black text-brand-900 text-sm">Thông báo học sinh</div>
+                          <div className="text-[10px] text-brand-500 font-medium">Bật/tắt thông báo bài tập mới cho học sinh</div>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={async () => {
+                          const newValue = !studentNotificationsEnabled;
+                          setStudentNotificationsEnabled(newValue);
+                          try {
+                            await setDoc(doc(db, 'config', 'notifications'), { studentEnabled: newValue }, { merge: true });
+                            showToast(`Đã ${newValue ? 'bật' : 'tắt'} thông báo học sinh!`, 'success');
+                          } catch (error) {
+                            handleFirestoreError(error, OperationType.UPDATE, 'config/notifications');
+                          }
+                        }}
+                        className={`w-12 h-6 rounded-full transition-all relative ${studentNotificationsEnabled ? 'bg-brand-600' : 'bg-slate-300'}`}
+                      >
+                        <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${studentNotificationsEnabled ? 'right-1' : 'left-1'}`} />
+                      </button>
+                    </div>
+
                     {Array.from(new Set(submissions.map(s => s.studentClass))).map(cls => {
                       const count = submissions.filter(s => s.studentClass === cls).length;
                       return (
@@ -2038,24 +2104,60 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex gap-4">
-                  <motion.button 
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => setIsPreviewing(true)}
-                    className="flex-1 bg-brand-100 text-brand-900 font-black py-6 rounded-3xl border-2 border-brand-200 flex items-center justify-center gap-4 text-xl"
-                  >
-                    <Eye className="w-8 h-8" /> XEM TRƯỚC
-                  </motion.button>
-                  <motion.button 
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={handleAddAssignment}
-                    className="flex-[2] dark-blue-gradient text-white font-black py-6 rounded-3xl shadow-2xl shadow-brand-900/40 flex items-center justify-center gap-4 text-xl border-4 border-brand-600"
-                  >
-                    <PlusCircle className="w-8 h-8" /> {editingAssignmentId ? 'CẬP NHẬT BÀI TẬP' : 'TẠO BÀI TẬP NGAY'}
-                  </motion.button>
-                </div>
+                  <div className="flex flex-wrap gap-6 mb-10">
+                    <div className="flex items-center gap-3 bg-brand-50/50 px-6 py-4 rounded-2xl border-2 border-brand-100">
+                      <input 
+                        type="checkbox" 
+                        id="allowChat"
+                        checked={newAssignment.allowChat}
+                        onChange={e => setNewAssignment({...newAssignment, allowChat: e.target.checked})}
+                        className="w-5 h-5 rounded border-brand-300 text-brand-600 focus:ring-brand-500"
+                      />
+                      <label htmlFor="allowChat" className="text-sm font-bold text-brand-900 cursor-pointer">Cho phép Chat Bot</label>
+                    </div>
+                    <div className="flex items-center gap-3 bg-brand-50/50 px-6 py-4 rounded-2xl border-2 border-brand-100">
+                      <input 
+                        type="checkbox" 
+                        id="allowSearch"
+                        checked={newAssignment.allowSearch}
+                        onChange={e => setNewAssignment({...newAssignment, allowSearch: e.target.checked})}
+                        className="w-5 h-5 rounded border-brand-300 text-brand-600 focus:ring-brand-500"
+                      />
+                      <label htmlFor="allowSearch" className="text-sm font-bold text-brand-900 cursor-pointer">Cho phép Tìm kiếm AI</label>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-4">
+                    {editingAssignmentId && (
+                      <motion.button 
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => {
+                          setEditingAssignmentId(null);
+                          setNewAssignment({ title: '', description: '', content: '', questions: [], knowledgeBase: '', difficulty: 'Dễ', allowChat: true, allowSearch: true });
+                        }}
+                        className="flex-1 bg-slate-100 text-slate-600 font-black py-6 rounded-3xl border-2 border-slate-200 flex items-center justify-center gap-4 text-xl"
+                      >
+                        HỦY BỎ
+                      </motion.button>
+                    )}
+                    <motion.button 
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => setIsPreviewing(true)}
+                      className="flex-1 bg-brand-100 text-brand-900 font-black py-6 rounded-3xl border-2 border-brand-200 flex items-center justify-center gap-4 text-xl"
+                    >
+                      <Eye className="w-8 h-8" /> XEM TRƯỚC
+                    </motion.button>
+                    <motion.button 
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleAddAssignment}
+                      className="flex-[2] dark-blue-gradient text-white font-black py-6 rounded-3xl shadow-2xl shadow-brand-900/40 flex items-center justify-center gap-4 text-xl border-4 border-brand-600"
+                    >
+                      <PlusCircle className="w-8 h-8" /> {editingAssignmentId ? 'CẬP NHẬT BÀI TẬP' : 'TẠO BÀI TẬP NGAY'}
+                    </motion.button>
+                  </div>
               </motion.div>
 
               {isPreviewing && (
@@ -2249,14 +2351,16 @@ export default function App() {
                                   difficulty: assignment.difficulty,
                                   content: assignment.content,
                                   questions: assignment.questions,
-                                  knowledgeBase: assignment.knowledgeBase
+                                  knowledgeBase: assignment.knowledgeBase,
+                                  allowChat: assignment.allowChat ?? true,
+                                  allowSearch: assignment.allowSearch ?? true
                                 });
                                 setEditingAssignmentId(assignment.id);
                                 window.scrollTo({ top: 0, behavior: 'smooth' });
                               }}
                               className="p-3 text-brand-400 hover:text-brand-600 hover:bg-brand-50 rounded-xl transition-all"
                             >
-                              <Save className="w-6 h-6" />
+                              <Edit3 className="w-6 h-6" />
                             </motion.button>
                             <motion.button 
                               whileHover={{ scale: 1.1, rotate: 90 }}
@@ -2637,13 +2741,11 @@ export default function App() {
     </AnimatePresence>
   );
 
-    const renderStudentView = () => {
-    // Ensure all categories from assignments are available in the filter
-    const allAvailableCategories = Array.from(new Set(['Tất cả', ...categories, ...assignments.map(a => a.category).filter(Boolean)]));
-
+  const renderStudentView = () => {
     const filteredAssignments = assignments.filter(a => {
       const matchCat = categoryFilter === 'Tất cả' || a.category === categoryFilter;
-      const matchDiff = difficultyFilter === 'Tất cả' || a.difficulty === difficultyFilter;
+      const assignmentDiff = a.difficulty || 'Dễ';
+      const matchDiff = difficultyFilter === 'Tất cả' || assignmentDiff === difficultyFilter;
       return matchCat && matchDiff;
     });
 
@@ -2763,8 +2865,9 @@ export default function App() {
                       onChange={e => setCategoryFilter(e.target.value)}
                       className="w-full px-5 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 focus:ring-brand-500 bg-slate-50/50 font-bold text-brand-950"
                     >
-                      {allAvailableCategories.map(cat => (
-                        <option key={cat} value={cat}>{cat === 'Tất cả' ? 'Tất cả thể loại' : cat}</option>
+                      <option value="Tất cả">Tất cả thể loại</option>
+                      {categories.map(cat => (
+                        <option key={cat} value={cat}>{cat}</option>
                       ))}
                     </select>
                   </div>
@@ -2828,66 +2931,39 @@ export default function App() {
               </div>
 
               <div id="assignments" className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-black text-brand-900 flex items-center gap-3">
-                    <FileText className="w-6 h-6 text-brand-600" /> Bài tập ôn luyện
-                  </h2>
-                  {(categoryFilter !== 'Tất cả' || difficultyFilter !== 'Tất cả') && (
-                    <button 
-                      onClick={() => { setCategoryFilter('Tất cả'); setDifficultyFilter('Tất cả'); }}
-                      className="text-xs font-black text-brand-600 hover:text-brand-800 uppercase tracking-widest flex items-center gap-1"
+                <h2 className="text-2xl font-black text-brand-900 flex items-center gap-3">
+                  <FileText className="w-6 h-6 text-brand-600" /> Bài tập ôn luyện
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {filteredAssignments.map(assignment => (
+                    <motion.div 
+                      key={assignment.id} 
+                      whileHover={{ y: -5 }}
+                      className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col hover:shadow-xl hover:border-brand-200 transition-all group"
                     >
-                      <XCircle className="w-4 h-4" /> Xóa bộ lọc
-                    </button>
-                  )}
-                </div>
-                
-                {filteredAssignments.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredAssignments.map(assignment => (
-                      <motion.div 
-                        key={assignment.id} 
-                        whileHover={{ y: -5 }}
-                        className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col hover:shadow-xl hover:border-brand-200 transition-all group"
-                      >
-                        <div className="flex justify-between items-start mb-6">
-                          <div className="flex gap-2">
-                            <span className="px-3 py-1 bg-brand-50 text-brand-600 text-[10px] font-black rounded-lg uppercase tracking-widest">{assignment.category}</span>
-                            <span className={`px-3 py-1 text-[10px] font-black rounded-lg uppercase tracking-widest ${
-                              assignment.difficulty === 'Dễ' ? 'bg-emerald-50 text-emerald-600' : 
-                              assignment.difficulty === 'Trung bình' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-600'
-                            }`}>{assignment.difficulty}</span>
-                          </div>
-                          <button onClick={() => setLeaderboardAssignmentId(assignment.id)} className="text-slate-300 hover:text-amber-500 transition-colors">
-                            <Trophy className="w-5 h-5" />
-                          </button>
+                      <div className="flex justify-between items-start mb-6">
+                        <div className="flex gap-2">
+                          <span className="px-3 py-1 bg-brand-50 text-brand-600 text-[10px] font-black rounded-lg uppercase tracking-widest">{assignment.category}</span>
+                          <span className={`px-3 py-1 text-[10px] font-black rounded-lg uppercase tracking-widest ${
+                            assignment.difficulty === 'Dễ' ? 'bg-emerald-50 text-emerald-600' : 
+                            assignment.difficulty === 'Trung bình' ? 'bg-amber-50 text-amber-600' : 'bg-red-50 text-red-600'
+                          }`}>{assignment.difficulty}</span>
                         </div>
-                        <h3 className="text-xl font-black mb-4 text-brand-950 group-hover:text-brand-600 transition-colors">{assignment.title}</h3>
-                        <p className="text-slate-500 text-sm mb-8 line-clamp-2">{assignment.description || 'Không có mô tả cho bài tập này.'}</p>
-                        <button 
-                          onClick={() => handleStartQuiz(assignment)} 
-                          className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-brand-600 transition-all shadow-lg shadow-slate-900/10 active:scale-95"
-                        >
-                          Bắt đầu làm bài
+                        <button onClick={() => setLeaderboardAssignmentId(assignment.id)} className="text-slate-300 hover:text-amber-500 transition-colors">
+                          <Trophy className="w-5 h-5" />
                         </button>
-                      </motion.div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="bg-white p-12 rounded-[2.5rem] border-2 border-dashed border-slate-200 text-center">
-                    <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                      <FileText className="w-8 h-8 text-slate-300" />
-                    </div>
-                    <h3 className="text-xl font-black text-slate-900 mb-2">Không tìm thấy bài tập</h3>
-                    <p className="text-slate-500 font-medium mb-6">Không có bài tập nào phù hợp với bộ lọc hiện tại của bạn.</p>
-                    <button 
-                      onClick={() => { setCategoryFilter('Tất cả'); setDifficultyFilter('Tất cả'); }}
-                      className="px-8 py-3 bg-brand-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-lg shadow-brand-500/20 hover:bg-brand-700 transition-all"
-                    >
-                      Xem tất cả bài tập
-                    </button>
-                  </div>
-                )}
+                      </div>
+                      <h3 className="text-xl font-black mb-4 text-brand-950 group-hover:text-brand-600 transition-colors">{assignment.title}</h3>
+                      <p className="text-slate-500 text-sm mb-8 line-clamp-2">{assignment.description || 'Không có mô tả cho bài tập này.'}</p>
+                      <button 
+                        onClick={() => handleStartQuiz(assignment)} 
+                        className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-brand-600 transition-all shadow-lg shadow-slate-900/10 active:scale-95"
+                      >
+                        Bắt đầu làm bài
+                      </button>
+                    </motion.div>
+                  ))}
+                </div>
               </div>
 
               <div id="leaderboard" className="space-y-6">
@@ -3105,28 +3181,6 @@ export default function App() {
             </div>
           )}
         </AnimatePresence>
-
-        {/* Floating AI Agents Buttons */}
-        <div className="fixed bottom-8 right-8 z-[60] flex flex-col gap-4">
-          <motion.button
-            whileHover={{ scale: 1.1, rotate: 5 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={() => setShowSearchAgent(true)}
-            className="w-14 h-14 bg-stone-900 text-white rounded-2xl shadow-2xl flex items-center justify-center border-2 border-stone-800 hover:bg-stone-800 transition-all"
-            title="Tìm kiếm thông tin AI"
-          >
-            <Search className="w-6 h-6" />
-          </motion.button>
-          <motion.button
-            whileHover={{ scale: 1.1, rotate: -5 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={() => setShowAIChat(true)}
-            className="w-14 h-14 bg-brand-600 text-white rounded-2xl shadow-2xl flex items-center justify-center border-2 border-brand-500 hover:bg-brand-700 transition-all"
-            title="Chat với trợ lý AI"
-          >
-            <MessageSquare className="w-6 h-6" />
-          </motion.button>
-        </div>
 
         <audio ref={audioRef} src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto" />
         <AnimatePresence>
@@ -3506,6 +3560,36 @@ export default function App() {
             </div>
           )}
         </AnimatePresence>
+
+        {/* Floating Action Buttons (FABs) */}
+        <div className="fixed bottom-8 right-8 flex flex-col gap-4 z-[60]">
+          {(!activeAssignment || activeAssignment.allowSearch !== false) && (
+            <motion.button
+              whileHover={{ scale: 1.1, rotate: 5 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={() => setShowSearchAgent(true)}
+              className="w-16 h-16 bg-emerald-600 text-white rounded-2xl shadow-2xl flex items-center justify-center border-4 border-white group relative"
+            >
+              <Globe className="w-8 h-8" />
+              <div className="absolute right-full mr-4 px-3 py-1 bg-brand-900 text-white text-[10px] font-black rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none uppercase tracking-widest">
+                Tìm kiếm AI
+              </div>
+            </motion.button>
+          )}
+          {(!activeAssignment || activeAssignment.allowChat !== false) && (
+            <motion.button
+              whileHover={{ scale: 1.1, rotate: -5 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={() => setShowAIChat(true)}
+              className="w-16 h-16 bg-brand-600 text-white rounded-2xl shadow-2xl flex items-center justify-center border-4 border-white group relative"
+            >
+              <BrainCircuit className="w-8 h-8" />
+              <div className="absolute right-full mr-4 px-3 py-1 bg-brand-900 text-white text-[10px] font-black rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none uppercase tracking-widest">
+                Trợ lý AI
+              </div>
+            </motion.button>
+          )}
+        </div>
       </div>
     );
   };
