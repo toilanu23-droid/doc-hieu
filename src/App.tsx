@@ -53,7 +53,11 @@ import {
   UserPlus,
   Bell,
   BellRing,
-  Settings
+  Settings,
+  Bold,
+  Italic,
+  Quote,
+  Minus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -248,6 +252,7 @@ export default function App() {
   const [studentClass, setStudentClass] = useState(() => localStorage.getItem('student_class') || '');
   const [isTakingQuiz, setIsTakingQuiz] = useState(false);
   const [quizStartTime, setQuizStartTime] = useState<number | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentAnswers, setCurrentAnswers] = useState<string[]>([]);
   const [quizResult, setQuizResult] = useState<Submission | null>(null);
   
@@ -569,6 +574,26 @@ export default function App() {
     };
     reader.readAsDataURL(file);
   };
+
+  const insertTextAtCursor = (textareaId: string, textBefore: string, textAfter: string = '') => {
+    const textarea = document.getElementById(textareaId) as HTMLTextAreaElement;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const value = textarea.value;
+    const selectedText = value.substring(start, end);
+
+    const newValue = value.substring(0, start) + textBefore + selectedText + textAfter + value.substring(end);
+    
+    setNewAssignment({ ...newAssignment, content: newValue });
+    
+    // Focus back and set selection
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + textBefore.length, end + textBefore.length);
+    }, 0);
+  };
   const handleAddCategory = async () => {
     if (!newCategory.trim()) return;
     const updatedCategories = [...categories, newCategory.trim()];
@@ -701,6 +726,7 @@ export default function App() {
       if (editingAssignmentId) {
         await updateDoc(doc(db, 'assignments', editingAssignmentId), {
           ...newAssignment,
+          difficulty: newAssignment.difficulty || 'Dễ',
           updatedAt: serverTimestamp()
         });
         setEditingAssignmentId(null);
@@ -708,11 +734,12 @@ export default function App() {
       } else {
         await addDoc(collection(db, 'assignments'), {
           ...newAssignment,
+          difficulty: newAssignment.difficulty || 'Dễ',
           createdAt: serverTimestamp()
         });
         showToast('Đã thêm bài tập!', 'success');
       }
-      setNewAssignment({ title: '', description: '', content: '', questions: [], knowledgeBase: '' });
+      setNewAssignment({ title: '', description: '', content: '', questions: [], knowledgeBase: '', difficulty: 'Dễ', allowChat: true, allowSearch: true });
     } catch (error) {
       handleFirestoreError(error, editingAssignmentId ? OperationType.UPDATE : OperationType.CREATE, 'assignments');
     }
@@ -781,6 +808,7 @@ export default function App() {
   const handleSubmitQuiz = async () => {
     if (!activeAssignment || !quizStartTime || !user) return;
 
+    setIsSubmitting(true);
     const endTime = Date.now();
     const completionTime = Math.round((endTime - quizStartTime) / 1000);
 
@@ -876,6 +904,8 @@ export default function App() {
 
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'submissions');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -1938,14 +1968,45 @@ export default function App() {
 
                 <div className="mb-10">
                   <div className="flex justify-between items-center mb-4">
-                    <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest ml-1">Nội dung bài đọc</label>
-                    <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-brand-600 hover:text-brand-700 bg-brand-50 px-3 py-1.5 rounded-xl border border-brand-100 transition-all">
-                      <Upload className="w-4 h-4" /> Tải file đề (.txt, .doc, .pdf)
-                      <input type="file" accept=".txt,.doc,.docx,.pdf" onChange={e => handleFileUpload(e, 'assignment')} className="hidden" />
-                    </label>
+                    <label className="block text-[10px] font-black text-brand-400 uppercase tracking-widest ml-1">Nội dung bài đọc (Hỗ trợ Markdown)</label>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => insertTextAtCursor('assignment-content', '**', '**')}
+                        className="p-2 bg-brand-50 hover:bg-brand-100 rounded-lg text-brand-600 transition-all"
+                        title="In đậm"
+                      >
+                        <Bold className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={() => insertTextAtCursor('assignment-content', '_', '_')}
+                        className="p-2 bg-brand-50 hover:bg-brand-100 rounded-lg text-brand-600 transition-all"
+                        title="In nghiêng"
+                      >
+                        <Italic className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={() => insertTextAtCursor('assignment-content', '> ')}
+                        className="p-2 bg-brand-50 hover:bg-brand-100 rounded-lg text-brand-600 transition-all"
+                        title="Trích dẫn"
+                      >
+                        <Quote className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={() => insertTextAtCursor('assignment-content', '---\n')}
+                        className="p-2 bg-brand-50 hover:bg-brand-100 rounded-lg text-brand-600 transition-all"
+                        title="Dòng kẻ ngang"
+                      >
+                        <Minus className="w-4 h-4" />
+                      </button>
+                      <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-brand-600 hover:text-brand-700 bg-brand-50 px-3 py-1.5 rounded-xl border border-brand-100 transition-all">
+                        <Upload className="w-4 h-4" /> Tải file đề (.txt, .doc, .pdf)
+                        <input type="file" accept=".txt,.doc,.docx,.pdf" onChange={e => handleFileUpload(e, 'assignment')} className="hidden" />
+                      </label>
+                    </div>
                   </div>
                   <textarea 
-                    rows={6}
+                    id="assignment-content"
+                    rows={8}
                     value={newAssignment.content}
                     onChange={e => setNewAssignment({...newAssignment, content: e.target.value})}
                     className="w-full bg-brand-50/50 border-2 border-brand-100 rounded-2xl px-6 py-4 font-bold text-brand-900 focus:outline-none focus:border-brand-500 transition-all min-h-[200px]"
@@ -2680,6 +2741,40 @@ export default function App() {
                   </div>
                 </div>
 
+                <div className="p-6 bg-brand-50 rounded-3xl border border-brand-100">
+                  <h3 className="font-black text-brand-900 text-sm uppercase tracking-widest mb-4">Chấm điểm lại (Giáo viên)</h3>
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1">
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="100" 
+                        value={selectedSubmission.score} 
+                        onChange={async (e) => {
+                          const newScore = parseInt(e.target.value);
+                          const updated = { ...selectedSubmission, score: newScore };
+                          setSelectedSubmission(updated);
+                          try {
+                            await updateDoc(doc(db, 'submissions', selectedSubmission.id), { score: newScore });
+                            showToast('Đã cập nhật điểm số!', 'success');
+                          } catch (error) {
+                            handleFirestoreError(error, OperationType.UPDATE, `submissions/${selectedSubmission.id}`);
+                          }
+                        }}
+                        className="w-full h-2 bg-brand-200 rounded-lg appearance-none cursor-pointer accent-brand-600"
+                      />
+                      <div className="flex justify-between text-[10px] font-bold text-brand-400 mt-2">
+                        <span>0%</span>
+                        <span>50%</span>
+                        <span>100%</span>
+                      </div>
+                    </div>
+                    <div className="w-16 h-16 bg-white rounded-2xl border-2 border-brand-600 flex items-center justify-center text-xl font-black text-brand-600 shadow-sm">
+                      {selectedSubmission.score}%
+                    </div>
+                  </div>
+                </div>
+
                 <div className="space-y-4">
                   <h3 className="font-bold text-lg">Câu trả lời chi tiết</h3>
                   {selectedSubmission.answers.map((ans, idx) => {
@@ -3176,6 +3271,29 @@ export default function App() {
                       <span className="text-xs font-black text-slate-900 uppercase">Đóng</span>
                     </button>
                   </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isSubmitting && (
+            <div className="fixed inset-0 bg-brand-900/80 backdrop-blur-md z-[200] flex flex-col items-center justify-center text-white p-6">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="text-center"
+              >
+                <div className="w-24 h-24 border-4 border-brand-400 border-t-white rounded-full animate-spin mx-auto mb-8" />
+                <h2 className="text-3xl font-black mb-4 uppercase tracking-tighter">Đang nộp bài...</h2>
+                <p className="text-brand-200 font-bold text-lg max-w-md mx-auto">
+                  Vui lòng đợi trong giây lát, AI đang phân tích và chấm điểm bài làm của bạn.
+                </p>
+                <div className="mt-12 flex gap-2 justify-center">
+                  <motion.div animate={{ y: [0, -10, 0] }} transition={{ repeat: Infinity, duration: 1, delay: 0 }} className="w-3 h-3 bg-white rounded-full" />
+                  <motion.div animate={{ y: [0, -10, 0] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-3 h-3 bg-white rounded-full" />
+                  <motion.div animate={{ y: [0, -10, 0] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-3 h-3 bg-white rounded-full" />
                 </div>
               </motion.div>
             </div>

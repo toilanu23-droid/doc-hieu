@@ -90,7 +90,7 @@
 }
 
 .markdown-body {
-  @apply text-inherit;
+  @apply text-inherit whitespace-pre-wrap;
 }
 
 .markdown-body p {
